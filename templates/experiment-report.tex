@@ -1,0 +1,98 @@
+\documentclass[11pt,a4paper]{article}
+
+% 基础包
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% 页面设置
+\geometry{margin=1in}
+
+% 超链接设置
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+% 代码样式
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+}
+
+% 占位符命令 (由系统替换)
+\newcommand{\TITLE}{{{TITLE}}}
+\newcommand{\ABSTRACT}{{{ABSTRACT}}}
+\newcommand{\RESEARCHGOAL}{{{RESEARCH_GOAL}}}
+\newcommand{\METHODOLOGY}{{{METHODOLOGY}}}
+\newcommand{\RESULTSTABLE}{{{RESULTS_TABLE}}}
+\newcommand{\KEYFINDINGS}{{{KEY_FINDINGS}}}
+\newcommand{\INSIGHTS}{{{INSIGHTS}}}
+\newcommand{\RECOMMENDATIONS}{{{RECOMMENDATIONS}}}
+\newcommand{\LIMITATIONS}{{{LIMITATIONS}}}
+
+\title{\TITLE}
+\author{Research Orchestration Cockpit\\Auto-generated Report}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\ABSTRACT
+\end{abstract}
+
+\section{Introduction}
+
+\subsection{Research Goal}
+\RESEARCHGOAL
+
+\section{Methodology}
+\METHODOLOGY
+
+\section{Experimental Setup}
+
+% 实验配置将在此处插入
+{{EXPERIMENTS_SECTION}}
+
+\section{Results}
+
+\subsection{Performance Comparison}
+\RESULTSTABLE
+
+% 图表将在此处插入
+{{FIGURES_SECTION}}
+
+\section{Analysis}
+
+\subsection{Key Findings}
+\KEYFINDINGS
+
+\subsection{Insights}
+\INSIGHTS
+
+\section{Conclusion and Recommendations}
+\RECOMMENDATIONS
+
+\section{Limitations}
+\LIMITATIONS
+
+% 参考文献
+{{REFERENCES_SECTION}}
+
+\end{document}

@@ -1,0 +1,82 @@
+\documentclass[11pt,a4paper]{article}
+
+% 基础包
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{geometry}
+\usepackage{xcolor}
+\usepackage{multirow}
+
+% 页面设置
+\geometry{margin=1in}
+
+% 超链接设置
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=cyan,
+}
+
+% 占位符命令
+\newcommand{\TITLE}{{{TITLE}}}
+\newcommand{\ABSTRACT}{{{ABSTRACT}}}
+\newcommand{\FULLMODELRESULTS}{{{FULL_MODEL_RESULTS}}}
+\newcommand{\ABLATIONTABLE}{{{ABLATION_TABLE}}}
+\newcommand{\CONTRIBUTIONS}{{{CONTRIBUTIONS}}}
+\newcommand{\INTERACTIONS}{{{INTERACTIONS}}}
+\newcommand{\RECOMMENDATIONS}{{{RECOMMENDATIONS}}}
+
+\title{\TITLE}
+\author{Research Orchestration Cockpit\\Ablation Study Report}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\ABSTRACT
+\end{abstract}
+
+\section{Introduction}
+
+This report presents the results of an ablation study designed to understand the contribution of individual components to the overall model performance.
+
+\section{Experimental Design}
+
+\subsection{Full Model Configuration}
+The full model includes all proposed components and serves as the baseline for comparison.
+
+\subsection{Ablation Variants}
+Each ablation variant removes or disables one specific component while keeping all other components unchanged.
+
+\section{Results}
+
+\subsection{Full Model Performance}
+\FULLMODELRESULTS
+
+\subsection{Ablation Results}
+\ABLATIONTABLE
+
+\section{Analysis}
+
+\subsection{Component Contributions}
+\CONTRIBUTIONS
+
+\subsection{Component Interactions}
+\INTERACTIONS
+
+\section{Recommendations}
+\RECOMMENDATIONS
+
+\section{Conclusion}
+
+The ablation study reveals the relative importance of each component in the proposed model. These findings can guide future development and optimization efforts.
+
+\end{document}

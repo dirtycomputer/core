@@ -1,0 +1,28 @@
+{
+  "name": "research-orchestration-cockpit",
+  "version": "0.1.0",
+  "description": "科研编排与执行驾驶舱 - Research Orchestration Cockpit for LLM/Deep Learning Research",
+  "private": true,
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "lint": "pnpm -r run lint",
+    "clean": "pnpm -r run clean",
+    "db:migrate": "pnpm --filter @roc/core run db:migrate",
+    "db:seed": "pnpm --filter @roc/core run db:seed"
+  },
+  "keywords": [
+    "research",
+    "orchestration",
+    "deep-learning",
+    "experiment-tracking",
+    "mlops"
+  ],
+  "author": "",
+  "license": "MIT"
+}
