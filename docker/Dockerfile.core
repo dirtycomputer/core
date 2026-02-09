@@ -23,13 +23,12 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# 安装 pnpm
-RUN npm install -g pnpm
-
 # 复制构建产物和依赖
 COPY --from=builder /app/packages/core/dist ./dist
 COPY --from=builder /app/packages/core/package.json ./
-COPY --from=builder /app/node_modules ./node_modules
+
+# 在运行镜像中安装生产依赖，避免 workspace node_modules 软链失效
+RUN npm install --omit=dev
 
 # 创建工件目录
 RUN mkdir -p /app/artifacts /app/reports

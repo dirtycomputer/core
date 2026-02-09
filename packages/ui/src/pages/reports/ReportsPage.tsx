@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { FileText, Download, Eye, Trash2 } from 'lucide-react';
+import { FileText, Download, Eye, Trash2, ExternalLink } from 'lucide-react';
 import { reportsApi, projectsApi } from '@/api/client';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
@@ -128,6 +128,15 @@ export default function ReportsPage() {
                       >
                         <Eye className="w-4 h-4" />
                       </button>
+                      <a
+                        href={`/api/reports/${report.id}/overleaf`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="p-1 text-gray-500 hover:text-gray-700"
+                        title="Open in Overleaf"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </a>
                       {report.pdfPath && (
                         <a
                           href={report.pdfPath}

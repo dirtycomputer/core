@@ -3,6 +3,13 @@
  */
 
 import { z } from 'zod';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+
+// LLM 配置文件路径
+const CONFIG_DIR = path.join(os.homedir(), '.core');
+const LLM_CONFIG_FILE = path.join(CONFIG_DIR, 'llm.json');
 
 // 配置 Schema
 const configSchema = z.object({
@@ -35,6 +42,8 @@ const configSchema = z.object({
   llm: z.object({
     provider: z.enum(['openai', 'anthropic']).default('openai'),
     apiKey: z.string().optional(),
+    tavilyApiKey: z.string().optional(),
+    baseUrl: z.string().optional(),
     model: z.string().default('gpt-4'),
     maxTokens: z.number().default(4096),
     temperature: z.number().default(0.7),
@@ -107,6 +116,18 @@ let config: Config | null = null;
  * 从环境变量加载配置
  */
 export function loadConfig(): Config {
+  // 先从文件加载 LLM 配置
+  const savedLLMConfig = loadLLMConfigFromFile();
+  const envLLMConfig = {
+    provider: (process.env.LLM_PROVIDER || 'openai') as 'openai' | 'anthropic',
+    apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY,
+    tavilyApiKey: process.env.TAVILY_API_KEY || undefined,
+    baseUrl: process.env.LLM_BASE_URL || undefined,
+    model: process.env.LLM_MODEL || 'gpt-4',
+    maxTokens: parseInt(process.env.LLM_MAX_TOKENS || '4096', 10),
+    temperature: parseFloat(process.env.LLM_TEMPERATURE || '0.7'),
+  };
+
   const rawConfig = {
     server: {
       port: parseInt(process.env.SERVER_PORT || '3000', 10),
@@ -128,11 +149,8 @@ export function loadConfig(): Config {
       db: parseInt(process.env.REDIS_DB || '0', 10),
     },
     llm: {
-      provider: (process.env.LLM_PROVIDER || 'openai') as 'openai' | 'anthropic',
-      apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY,
-      model: process.env.LLM_MODEL || 'gpt-4',
-      maxTokens: parseInt(process.env.LLM_MAX_TOKENS || '4096', 10),
-      temperature: parseFloat(process.env.LLM_TEMPERATURE || '0.7'),
+      ...envLLMConfig,
+      ...savedLLMConfig,
     },
     cluster: {
       defaultType: (process.env.CLUSTER_TYPE || 'slurm') as 'slurm' | 'kubernetes' | 'ssh',
@@ -205,4 +223,71 @@ export function getConfig(): Config {
  */
 export function resetConfig() {
   config = null;
+}
+
+/**
+ * 更新 LLM 配置
+ */
+export function updateLLMConfig(llmConfig: Partial<Config['llm']>) {
+  if (!config) {
+    config = loadConfig();
+  }
+  config = {
+    ...config,
+    llm: {
+      ...config.llm,
+      ...llmConfig,
+    },
+  };
+
+  // 保存到文件
+  saveLLMConfigToFile(config.llm);
+
+  return config.llm;
+}
+
+/**
+ * 获取 LLM 配置（不包含敏感信息）
+ */
+export function getLLMConfigSafe() {
+  const cfg = getConfig();
+  return {
+    provider: cfg.llm.provider,
+    baseUrl: cfg.llm.baseUrl || '',
+    model: cfg.llm.model,
+    maxTokens: cfg.llm.maxTokens,
+    temperature: cfg.llm.temperature,
+    hasApiKey: !!cfg.llm.apiKey,
+    hasTavilyApiKey: !!cfg.llm.tavilyApiKey,
+  };
+}
+
+/**
+ * 从文件加载 LLM 配置
+ */
+function loadLLMConfigFromFile(): Partial<Config['llm']> | null {
+  try {
+    if (fs.existsSync(LLM_CONFIG_FILE)) {
+      const content = fs.readFileSync(LLM_CONFIG_FILE, 'utf-8');
+      return JSON.parse(content);
+    }
+  } catch (error) {
+    console.error('Failed to load LLM config from file:', error);
+  }
+  return null;
+}
+
+/**
+ * 保存 LLM 配置到文件
+ */
+function saveLLMConfigToFile(llmConfig: Config['llm']): void {
+  try {
+    // 确保目录存在
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+    fs.writeFileSync(LLM_CONFIG_FILE, JSON.stringify(llmConfig, null, 2), 'utf-8');
+  } catch (error) {
+    console.error('Failed to save LLM config to file:', error);
+  }
 }

@@ -105,6 +105,54 @@ async function migrate() {
       EXCEPTION WHEN duplicate_object THEN null; END $$;
     `);
 
+    await db.execute(sql`
+      DO $$ BEGIN
+        CREATE TYPE workflow_status AS ENUM ('pending', 'running', 'waiting_human', 'completed', 'failed', 'cancelled');
+      EXCEPTION WHEN duplicate_object THEN null; END $$;
+    `);
+
+    await db.execute(sql`
+      DO $$ BEGIN
+        CREATE TYPE workflow_task_status AS ENUM ('pending', 'leased', 'running', 'completed', 'failed', 'cancelled');
+      EXCEPTION WHEN duplicate_object THEN null; END $$;
+    `);
+
+    await db.execute(sql`
+      DO $$ BEGIN
+        CREATE TYPE workflow_event_level AS ENUM ('info', 'warning', 'error');
+      EXCEPTION WHEN duplicate_object THEN null; END $$;
+    `);
+
+    await db.execute(sql`
+      DO $$ BEGIN
+        CREATE TYPE milestone_status AS ENUM ('pending', 'in_progress', 'completed', 'blocked');
+      EXCEPTION WHEN duplicate_object THEN null; END $$;
+    `);
+
+    await db.execute(sql`
+      DO $$ BEGIN
+        CREATE TYPE schedule_task_status AS ENUM ('todo', 'in_progress', 'waiting_review', 'done', 'blocked');
+      EXCEPTION WHEN duplicate_object THEN null; END $$;
+    `);
+
+    await db.execute(sql`
+      DO $$ BEGIN
+        CREATE TYPE hitl_gate_status AS ENUM ('pending', 'approved', 'rejected', 'changes_requested', 'timeout');
+      EXCEPTION WHEN duplicate_object THEN null; END $$;
+    `);
+
+    await db.execute(sql`
+      DO $$ BEGIN
+        CREATE TYPE dataset_status AS ENUM ('discovered', 'curated', 'ready', 'archived');
+      EXCEPTION WHEN duplicate_object THEN null; END $$;
+    `);
+
+    await db.execute(sql`
+      DO $$ BEGIN
+        CREATE TYPE paper_status AS ENUM ('discovered', 'downloaded', 'archived');
+      EXCEPTION WHEN duplicate_object THEN null; END $$;
+    `);
+
     // 创建用户表
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS users (
@@ -288,6 +336,210 @@ async function migrate() {
         timestamp TIMESTAMP NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS metric_series_run_name_step_idx ON metric_series(run_id, name, step);
+    `);
+
+    // 创建工作流实例表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS workflow_instances (
+        id VARCHAR(36) PRIMARY KEY,
+        project_id VARCHAR(36) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        status workflow_status NOT NULL DEFAULT 'pending',
+        current_step VARCHAR(127) NOT NULL DEFAULT 'plan_generate',
+        context JSONB NOT NULL DEFAULT '{}',
+        error_message TEXT,
+        cancel_requested BOOLEAN NOT NULL DEFAULT false,
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS workflow_instances_project_idx ON workflow_instances(project_id);
+      CREATE INDEX IF NOT EXISTS workflow_instances_status_idx ON workflow_instances(status);
+    `);
+
+    // 创建工作流任务表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS workflow_tasks (
+        id VARCHAR(36) PRIMARY KEY,
+        workflow_id VARCHAR(36) NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+        step VARCHAR(127) NOT NULL,
+        status workflow_task_status NOT NULL DEFAULT 'pending',
+        payload JSONB NOT NULL DEFAULT '{}',
+        result JSONB,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        run_after TIMESTAMP NOT NULL DEFAULT NOW(),
+        lease_until TIMESTAMP,
+        idempotency_key VARCHAR(255),
+        error_message TEXT,
+        started_at TIMESTAMP,
+        completed_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS workflow_tasks_workflow_idx ON workflow_tasks(workflow_id);
+      CREATE INDEX IF NOT EXISTS workflow_tasks_status_run_after_idx ON workflow_tasks(status, run_after);
+      CREATE INDEX IF NOT EXISTS workflow_tasks_lease_idx ON workflow_tasks(lease_until);
+      CREATE UNIQUE INDEX IF NOT EXISTS workflow_tasks_idempotency_idx ON workflow_tasks(idempotency_key);
+    `);
+
+    // 创建工作流事件表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS workflow_events (
+        id VARCHAR(36) PRIMARY KEY,
+        workflow_id VARCHAR(36) NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+        task_id VARCHAR(36) REFERENCES workflow_tasks(id) ON DELETE SET NULL,
+        type VARCHAR(127) NOT NULL,
+        level workflow_event_level NOT NULL DEFAULT 'info',
+        message TEXT NOT NULL,
+        data JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS workflow_events_workflow_idx ON workflow_events(workflow_id);
+      CREATE INDEX IF NOT EXISTS workflow_events_type_idx ON workflow_events(type);
+    `);
+
+    // 创建项目里程碑表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS milestones (
+        id VARCHAR(36) PRIMARY KEY,
+        project_id VARCHAR(36) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title VARCHAR(255) NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        due_date TIMESTAMP,
+        status milestone_status NOT NULL DEFAULT 'pending',
+        position INTEGER NOT NULL DEFAULT 0,
+        owner VARCHAR(127),
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS milestones_project_idx ON milestones(project_id);
+      CREATE INDEX IF NOT EXISTS milestones_status_idx ON milestones(status);
+    `);
+
+    // 创建日程任务表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS schedule_tasks (
+        id VARCHAR(36) PRIMARY KEY,
+        milestone_id VARCHAR(36) NOT NULL REFERENCES milestones(id) ON DELETE CASCADE,
+        workflow_id VARCHAR(36) REFERENCES workflow_instances(id) ON DELETE SET NULL,
+        title VARCHAR(255) NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status schedule_task_status NOT NULL DEFAULT 'todo',
+        assignee VARCHAR(127),
+        due_date TIMESTAMP,
+        dependency_task_id VARCHAR(36),
+        blocking_reason TEXT,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS schedule_tasks_milestone_idx ON schedule_tasks(milestone_id);
+      CREATE INDEX IF NOT EXISTS schedule_tasks_workflow_idx ON schedule_tasks(workflow_id);
+      CREATE INDEX IF NOT EXISTS schedule_tasks_status_idx ON schedule_tasks(status);
+    `);
+
+    // 创建人类介入闸门表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS human_gates (
+        id VARCHAR(36) PRIMARY KEY,
+        workflow_id VARCHAR(36) NOT NULL REFERENCES workflow_instances(id) ON DELETE CASCADE,
+        step VARCHAR(127) NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        question TEXT NOT NULL,
+        options JSONB NOT NULL DEFAULT '[]',
+        status hitl_gate_status NOT NULL DEFAULT 'pending',
+        selected_option TEXT,
+        comment TEXT,
+        requested_by VARCHAR(127),
+        requested_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        resolved_at TIMESTAMP,
+        resolved_by VARCHAR(127),
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS human_gates_workflow_idx ON human_gates(workflow_id);
+      CREATE INDEX IF NOT EXISTS human_gates_status_idx ON human_gates(status);
+    `);
+
+    // 创建数据集表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS datasets (
+        id VARCHAR(36) PRIMARY KEY,
+        project_id VARCHAR(36) REFERENCES projects(id) ON DELETE SET NULL,
+        name VARCHAR(255) NOT NULL,
+        source VARCHAR(255) NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        license VARCHAR(255) NOT NULL DEFAULT '',
+        homepage VARCHAR(1024),
+        tags JSONB NOT NULL DEFAULT '[]',
+        metadata JSONB NOT NULL DEFAULT '{}',
+        status dataset_status NOT NULL DEFAULT 'discovered',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS datasets_project_idx ON datasets(project_id);
+      CREATE INDEX IF NOT EXISTS datasets_status_idx ON datasets(status);
+    `);
+
+    // 创建数据集版本表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS dataset_versions (
+        id VARCHAR(36) PRIMARY KEY,
+        dataset_id VARCHAR(36) NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
+        version VARCHAR(127) NOT NULL,
+        split_info JSONB NOT NULL DEFAULT '{}',
+        file_path VARCHAR(1024),
+        checksum VARCHAR(255),
+        size_bytes INTEGER NOT NULL DEFAULT 0,
+        build_recipe JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS dataset_versions_dataset_idx ON dataset_versions(dataset_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS dataset_versions_dataset_version_idx ON dataset_versions(dataset_id, version);
+    `);
+
+    // 创建论文库表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS papers (
+        id VARCHAR(36) PRIMARY KEY,
+        project_id VARCHAR(36) REFERENCES projects(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        authors JSONB NOT NULL DEFAULT '[]',
+        venue VARCHAR(255),
+        year INTEGER,
+        doi VARCHAR(255),
+        url VARCHAR(1024),
+        pdf_url VARCHAR(1024),
+        local_pdf_path VARCHAR(1024),
+        abstract TEXT,
+        tags JSONB NOT NULL DEFAULT '[]',
+        notes TEXT,
+        status paper_status NOT NULL DEFAULT 'discovered',
+        metadata JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS papers_project_idx ON papers(project_id);
+      CREATE INDEX IF NOT EXISTS papers_status_idx ON papers(status);
+    `);
+
+    // 创建审稿与复盘表
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS research_reviews (
+        id VARCHAR(36) PRIMARY KEY,
+        project_id VARCHAR(36) NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        workflow_id VARCHAR(36) REFERENCES workflow_instances(id) ON DELETE SET NULL,
+        report_id VARCHAR(36) REFERENCES reports(id) ON DELETE SET NULL,
+        title VARCHAR(255) NOT NULL,
+        review JSONB NOT NULL DEFAULT '{}',
+        retrospective JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS research_reviews_project_idx ON research_reviews(project_id);
+      CREATE INDEX IF NOT EXISTS research_reviews_workflow_idx ON research_reviews(workflow_id);
     `);
 
     logger.info('Database migration completed successfully');

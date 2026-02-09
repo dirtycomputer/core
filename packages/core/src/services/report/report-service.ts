@@ -14,6 +14,7 @@ import { generateId } from '../../utils/id';
 import { createLogger } from '../../utils/logger';
 import type { Report, ReportType, ReportStatus, ReportSection } from '../../models/types';
 import type { ExperimentAnalysis } from '../../agents/analysis-agent';
+import { plotService, type AutoPlotOptions } from '../plot';
 
 const execAsync = promisify(exec);
 const logger = createLogger('service:report');
@@ -47,6 +48,7 @@ export interface GenerateReportOptions {
   data: ReportData;
   outputDir?: string;
   compilePdf?: boolean;
+  autoPlot?: AutoPlotOptions & { enabled?: boolean };
 }
 
 export class ReportService {
@@ -68,13 +70,50 @@ export class ReportService {
     // 创建输出目录
     await mkdir(outputDir, { recursive: true });
 
+    const autoPlotEnabled = options.autoPlot?.enabled !== false;
+    let figureNotes: string[] = [];
+    let enrichedData = options.data;
+
+    if (autoPlotEnabled && options.data.experiments.length > 0) {
+      const generated = await plotService.generateExperimentFigures(
+        options.data.experiments.map((e) => ({
+          name: e.name,
+          results: e.results,
+        })),
+        outputDir,
+        {
+          engine: options.autoPlot?.engine || 'auto',
+          charts: options.autoPlot?.charts,
+          titlePrefix: options.data.projectName || options.data.title,
+        }
+      );
+
+      figureNotes = generated.notes;
+      enrichedData = {
+        ...options.data,
+        figures: [...(options.data.figures || []), ...generated.figures],
+      };
+    }
+
+    if (figureNotes.length > 0) {
+      enrichedData = {
+        ...enrichedData,
+        analysis: enrichedData.analysis
+          ? {
+              ...enrichedData.analysis,
+              limitations: [...(enrichedData.analysis.limitations || []), ...figureNotes],
+            }
+          : undefined,
+      };
+    }
+
     // 生成 LaTeX 源码
-    const latexSource = this.generateLatex(options.data, options.type);
+    const latexSource = this.generateLatex(enrichedData, options.type);
     const texPath = join(outputDir, 'report.tex');
     await writeFile(texPath, latexSource);
 
     // 创建报告记录
-    const sections = this.extractSections(options.data);
+    const sections = this.extractSections(enrichedData);
 
     const [result] = await this.db
       .insert(reports)
@@ -82,7 +121,7 @@ export class ReportService {
         id,
         projectId: options.projectId,
         type: options.type,
-        title: options.data.title,
+        title: enrichedData.title,
         status: 'draft',
         sections,
         latexSource,
@@ -208,10 +247,11 @@ export class ReportService {
     sections.push(`\\documentclass[11pt,a4paper]{article}
 \\usepackage[utf8]{inputenc}
 \\usepackage[T1]{fontenc}
+\\usepackage{CJKutf8}
 \\usepackage{amsmath,amssymb}
 \\usepackage{graphicx}
 \\usepackage{booktabs}
-\\usepackage{hyperref}
+\\usepackage[unicode]{hyperref}
 \\usepackage{float}
 \\usepackage{geometry}
 \\geometry{margin=1in}
@@ -221,6 +261,7 @@ export class ReportService {
 \\date{\\today}
 
 \\begin{document}
+\\begin{CJK*}{UTF8}{gbsn}
 \\maketitle
 `);
 
@@ -256,7 +297,7 @@ ${this.escapeLatex(exp.description)}
 \\textbf{Configuration:}
 \\begin{itemize}
 ${Object.entries(exp.config)
-  .map(([k, v]) => `\\item ${this.escapeLatex(k)}: ${this.escapeLatex(String(v))}`)
+  .map(([k, v]) => `\\item ${this.escapeLatex(k)}: ${this.escapeLatex(this.formatLatexValue(v))}`)
   .join('\n')}
 \\end{itemize}
 `);
@@ -270,6 +311,13 @@ ${Object.entries(exp.config)
     if (data.experiments.length > 0) {
       const metrics = Object.keys(data.experiments[0].results);
       sections.push(this.generateResultsTable(data.experiments, metrics));
+    }
+
+    if (data.tables && data.tables.length > 0) {
+      sections.push(`\\subsection{Additional Tables}`);
+      for (const table of data.tables) {
+        sections.push(this.generateCustomTable(table.caption, table.headers, table.rows));
+      }
     }
 
     // 图表
@@ -327,7 +375,8 @@ ${data.analysis.limitations.map((l) => `\\item ${this.escapeLatex(l)}`).join('\n
     }
 
     // 文档尾
-    sections.push(`\\end{document}`);
+    sections.push(`\\end{CJK*}
+\\end{document}`);
 
     return sections.join('\n');
   }
@@ -362,6 +411,36 @@ ${rows.join(' \\\\\n')} \\\\
 \\end{tabular}
 \\end{table}
 `;
+  }
+
+  private generateCustomTable(caption: string, headers: string[], rows: string[][]): string {
+    const colSpec = 'l'.repeat(Math.max(headers.length, 1));
+    const safeHeaders = headers.map((h) => this.escapeLatex(h)).join(' & ');
+    const safeRows = rows.map((row) => row.map((cell) => this.escapeLatex(cell)).join(' & '));
+
+    return `\\begin{table}[H]
+\\centering
+\\caption{${this.escapeLatex(caption)}}
+\\begin{tabular}{${colSpec}}
+\\toprule
+${safeHeaders} \\\\
+\\midrule
+${safeRows.join(' \\\\\n')} \\\\
+\\bottomrule
+\\end{tabular}
+\\end{table}
+`;
+  }
+
+  private formatLatexValue(value: unknown): string {
+    if (value === null || value === undefined) return '-';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
   }
 
   /**

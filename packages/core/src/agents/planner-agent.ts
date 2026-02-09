@@ -108,6 +108,15 @@ export class PlannerAgent {
   private provider: 'openai' | 'anthropic' = 'openai';
   private initialized = false;
 
+  /**
+   * 重置初始化状态，用于配置更新后重新初始化
+   */
+  resetInitialization() {
+    this.initialized = false;
+    this.openai = null;
+    this.anthropic = null;
+  }
+
   private ensureInitialized() {
     if (this.initialized) return;
 
@@ -117,10 +126,12 @@ export class PlannerAgent {
     if (this.provider === 'openai' && config.llm.apiKey) {
       this.openai = new OpenAI({
         apiKey: config.llm.apiKey,
+        baseURL: config.llm.baseUrl || undefined,
       });
     } else if (this.provider === 'anthropic' && config.llm.apiKey) {
       this.anthropic = new Anthropic({
         apiKey: config.llm.apiKey,
+        baseURL: config.llm.baseUrl || undefined,
       });
     }
 
@@ -150,6 +161,10 @@ export class PlannerAgent {
 
       return plan;
     } catch (error) {
+      if (error instanceof Error && error.message === 'No LLM provider configured') {
+        logger.warn({ projectName: input.projectName }, 'LLM not configured, using fallback planner');
+        return this.generateFallbackPlan(input);
+      }
       logger.error({ error, projectName: input.projectName }, 'Failed to generate plan');
       throw error;
     }
@@ -171,11 +186,22 @@ For each component, create an experiment that removes or disables that component
 
 Output as a JSON array of experiment plans.`;
 
-    const response = await this.callLLM(prompt);
-
     try {
+      const response = await this.callLLM(prompt);
       return JSON.parse(response);
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.message === 'No LLM provider configured') {
+        return components.map((component, index) => ({
+          name: `ablation_${component}`,
+          description: `Disable component '${component}' to quantify contribution`,
+          hypothesis: `${component} contributes to final metric and removing it reduces quality`,
+          type: 'ablation',
+          config: baseExperiment.config,
+          variables: { ...baseExperiment.variables, ablationComponent: component, enabled: false },
+          expectedImpact: 'Performance drop indicates positive contribution',
+          priority: index + 1,
+        }));
+      }
       logger.error('Failed to parse ablation plan response');
       return [];
     }
@@ -273,20 +299,25 @@ Research Goal: ${input.researchGoal}
         ],
         max_tokens: config.llm.maxTokens,
         temperature: config.llm.temperature,
-        response_format: { type: 'json_object' },
       });
+
+      logger.debug({ response }, 'OpenAI response received');
+
+      if (!response.choices || response.choices.length === 0) {
+        logger.error({ response }, 'Invalid OpenAI response: no choices');
+        throw new Error('Invalid response from LLM: no choices returned');
+      }
 
       return response.choices[0]?.message?.content || '';
-    } else if (this.anthropic) {
-      const response = await this.anthropic.beta.messages.create({
-        model: config.llm.model.includes('claude') ? config.llm.model : 'claude-3-sonnet-20240229',
-        max_tokens: config.llm.maxTokens,
-        system: PLANNER_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userPrompt }],
+    } else if (this.provider === 'anthropic' && this.anthropic) {
+      const response = await this.anthropic.completions.create({
+        model: config.llm.model,
+        max_tokens_to_sample: config.llm.maxTokens,
+        prompt: `${Anthropic.HUMAN_PROMPT} ${PLANNER_SYSTEM_PROMPT}\n\n${userPrompt}${Anthropic.AI_PROMPT}`,
       });
 
-      const textBlock = response.content.find((block: { type: string }) => block.type === 'text');
-      return textBlock?.type === 'text' ? (textBlock as { type: 'text'; text: string }).text : '';
+      logger.debug({ response }, 'Anthropic response received');
+      return response.completion || '';
     }
 
     throw new Error('No LLM provider configured');
@@ -308,6 +339,101 @@ Research Goal: ${input.researchGoal}
       logger.error({ response }, 'Failed to parse LLM response as JSON');
       throw new Error('Invalid plan format from LLM');
     }
+  }
+
+  private generateFallbackPlan(input: ResearchPlanInput): ResearchPlan {
+    const maxExperiments = Math.max(3, Math.min(input.constraints?.maxExperiments || 6, 12));
+    const baseModel = input.baselineInfo?.model || 'lightweight-transformer';
+    const baseDataset = input.baselineInfo?.dataset || 'custom-dataset';
+    const cpuCount = 4;
+
+    const baselineExperiment: ExperimentPlan = {
+      name: 'baseline_cpu',
+      description: 'CPU baseline run for reproducible reference.',
+      hypothesis: 'Baseline can establish reference metrics for later improvements.',
+      type: 'baseline',
+      config: {
+        model: { name: baseModel },
+        data: { dataset: baseDataset },
+        training: { epochs: 5, batchSize: 8, learningRate: 0.001, optimizer: 'adamw' },
+        resources: { cpuCount, gpuCount: 0, memoryGb: 8, timeLimit: '00:20:00' },
+      },
+      variables: { precision: 'fp32', seed: 42 },
+      expectedImpact: 'Stable baseline for comparing future changes',
+      priority: 1,
+    };
+
+    const improvementExperiment: ExperimentPlan = {
+      name: 'improvement_lr_scheduler',
+      description: 'Enable learning rate scheduler and warmup on CPU run.',
+      hypothesis: 'Scheduler can improve convergence stability.',
+      type: 'improvement',
+      config: {
+        model: { name: baseModel },
+        data: { dataset: baseDataset },
+        training: { epochs: 6, batchSize: 8, learningRate: 0.0008, scheduler: 'cosine', warmupSteps: 50 },
+        resources: { cpuCount, gpuCount: 0, memoryGb: 8, timeLimit: '00:25:00' },
+      },
+      variables: { scheduler: 'cosine', warmupSteps: 50 },
+      expectedImpact: 'Higher final accuracy and smoother loss curve',
+      priority: 2,
+    };
+
+    const ablationExperiment: ExperimentPlan = {
+      name: 'ablation_no_scheduler',
+      description: 'Disable scheduler while keeping other settings aligned.',
+      hypothesis: 'Removing scheduler reduces final performance.',
+      type: 'ablation',
+      config: {
+        model: { name: baseModel },
+        data: { dataset: baseDataset },
+        training: { epochs: 6, batchSize: 8, learningRate: 0.0008 },
+        resources: { cpuCount, gpuCount: 0, memoryGb: 8, timeLimit: '00:25:00' },
+      },
+      variables: { scheduler: 'none' },
+      expectedImpact: 'Observe measurable degradation to confirm contribution',
+      priority: 3,
+    };
+
+    const candidates = [baselineExperiment, improvementExperiment, ablationExperiment];
+    const selected = candidates.slice(0, maxExperiments);
+
+    return {
+      summary: `CPU-first fallback plan for ${input.projectName}. Start from baseline, then improvement, then ablation verification.`,
+      methodology: 'Iterative experimentation: baseline -> targeted improvement -> ablation validation.',
+      experimentGroups: [
+        {
+          name: 'Baseline Group',
+          type: 'baseline' as const,
+          hypothesis: baselineExperiment.hypothesis,
+          experiments: [selected[0]],
+        },
+        {
+          name: 'Improvement Group',
+          type: 'improvement' as const,
+          hypothesis: improvementExperiment.hypothesis,
+          experiments: selected[1] ? [selected[1]] : [],
+        },
+        {
+          name: 'Ablation Group',
+          type: 'ablation' as const,
+          hypothesis: ablationExperiment.hypothesis,
+          experiments: selected[2] ? [selected[2]] : [],
+        },
+      ].filter((group) => group.experiments.length > 0),
+      riskAssessment: [
+        'CPU runs are slower than GPU and may need reduced epoch count.',
+        'Small batch size can increase metric variance.',
+      ],
+      successCriteria: [
+        'Improvement group final accuracy >= baseline + 1%.',
+        'Ablation removes at least part of the observed gain.',
+      ],
+      estimatedResources: {
+        totalGpuHours: 0,
+        experimentsCount: selected.length,
+      },
+    };
   }
 
   private cartesianProduct<T>(arrays: T[][]): T[][] {

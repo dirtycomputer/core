@@ -3,7 +3,7 @@
  * PostgreSQL 数据库表结构
  */
 
-import { pgTable, varchar, text, timestamp, jsonb, integer, pgEnum, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, varchar, text, timestamp, jsonb, integer, pgEnum, index, uniqueIndex, boolean } from 'drizzle-orm/pg-core';
 
 // ============ 枚举类型 ============
 export const projectStatusEnum = pgEnum('project_status', ['planning', 'active', 'completed', 'archived']);
@@ -21,6 +21,14 @@ export const approvalTypeEnum = pgEnum('approval_type', ['plan', 'experiment', '
 export const approvalStatusEnum = pgEnum('approval_status', ['pending', 'approved', 'rejected']);
 export const userRoleEnum = pgEnum('user_role', ['admin', 'researcher', 'viewer']);
 export const clusterTypeEnum = pgEnum('cluster_type', ['slurm', 'kubernetes', 'ssh']);
+export const workflowStatusEnum = pgEnum('workflow_status', ['pending', 'running', 'waiting_human', 'completed', 'failed', 'cancelled']);
+export const workflowTaskStatusEnum = pgEnum('workflow_task_status', ['pending', 'leased', 'running', 'completed', 'failed', 'cancelled']);
+export const workflowEventLevelEnum = pgEnum('workflow_event_level', ['info', 'warning', 'error']);
+export const milestoneStatusEnum = pgEnum('milestone_status', ['pending', 'in_progress', 'completed', 'blocked']);
+export const scheduleTaskStatusEnum = pgEnum('schedule_task_status', ['todo', 'in_progress', 'waiting_review', 'done', 'blocked']);
+export const hitlGateStatusEnum = pgEnum('hitl_gate_status', ['pending', 'approved', 'rejected', 'changes_requested', 'timeout']);
+export const datasetStatusEnum = pgEnum('dataset_status', ['discovered', 'curated', 'ready', 'archived']);
+export const paperStatusEnum = pgEnum('paper_status', ['discovered', 'downloaded', 'archived']);
 
 // ============ 用户表 ============
 export const users = pgTable('users', {
@@ -195,4 +203,198 @@ export const metricSeries = pgTable('metric_series', {
   timestamp: timestamp('timestamp').notNull().defaultNow(),
 }, (table) => ({
   runNameStepIdx: index('metric_series_run_name_step_idx').on(table.runId, table.name, table.step),
+}));
+
+// ============ 工作流实例表 ============
+export const workflowInstances = pgTable('workflow_instances', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  projectId: varchar('project_id', { length: 36 }).notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  name: varchar('name', { length: 255 }).notNull(),
+  status: workflowStatusEnum('status').notNull().default('pending'),
+  currentStep: varchar('current_step', { length: 127 }).notNull().default('plan_generate'),
+  context: jsonb('context').notNull().default({}),
+  errorMessage: text('error_message'),
+  cancelRequested: boolean('cancel_requested').notNull().default(false),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => ({
+  projectIdx: index('workflow_instances_project_idx').on(table.projectId),
+  statusIdx: index('workflow_instances_status_idx').on(table.status),
+}));
+
+// ============ 工作流任务表 ============
+export const workflowTasks = pgTable('workflow_tasks', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  workflowId: varchar('workflow_id', { length: 36 }).notNull().references(() => workflowInstances.id, { onDelete: 'cascade' }),
+  step: varchar('step', { length: 127 }).notNull(),
+  status: workflowTaskStatusEnum('status').notNull().default('pending'),
+  payload: jsonb('payload').notNull().default({}),
+  result: jsonb('result'),
+  attempts: integer('attempts').notNull().default(0),
+  maxAttempts: integer('max_attempts').notNull().default(3),
+  runAfter: timestamp('run_after').notNull().defaultNow(),
+  leaseUntil: timestamp('lease_until'),
+  idempotencyKey: varchar('idempotency_key', { length: 255 }),
+  errorMessage: text('error_message'),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => ({
+  workflowIdx: index('workflow_tasks_workflow_idx').on(table.workflowId),
+  statusRunAfterIdx: index('workflow_tasks_status_run_after_idx').on(table.status, table.runAfter),
+  leaseIdx: index('workflow_tasks_lease_idx').on(table.leaseUntil),
+  idempotencyIdx: uniqueIndex('workflow_tasks_idempotency_idx').on(table.idempotencyKey),
+}));
+
+// ============ 工作流事件表 ============
+export const workflowEvents = pgTable('workflow_events', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  workflowId: varchar('workflow_id', { length: 36 }).notNull().references(() => workflowInstances.id, { onDelete: 'cascade' }),
+  taskId: varchar('task_id', { length: 36 }).references(() => workflowTasks.id, { onDelete: 'set null' }),
+  type: varchar('type', { length: 127 }).notNull(),
+  level: workflowEventLevelEnum('level').notNull().default('info'),
+  message: text('message').notNull(),
+  data: jsonb('data').notNull().default({}),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => ({
+  workflowIdx: index('workflow_events_workflow_idx').on(table.workflowId),
+  typeIdx: index('workflow_events_type_idx').on(table.type),
+}));
+
+// ============ 项目里程碑表 ============
+export const milestones = pgTable('milestones', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  projectId: varchar('project_id', { length: 36 }).notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  title: varchar('title', { length: 255 }).notNull(),
+  description: text('description').notNull().default(''),
+  dueDate: timestamp('due_date'),
+  status: milestoneStatusEnum('status').notNull().default('pending'),
+  position: integer('position').notNull().default(0),
+  owner: varchar('owner', { length: 127 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => ({
+  projectIdx: index('milestones_project_idx').on(table.projectId),
+  statusIdx: index('milestones_status_idx').on(table.status),
+}));
+
+// ============ 日程任务表 ============
+export const scheduleTasks = pgTable('schedule_tasks', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  milestoneId: varchar('milestone_id', { length: 36 }).notNull().references(() => milestones.id, { onDelete: 'cascade' }),
+  workflowId: varchar('workflow_id', { length: 36 }).references(() => workflowInstances.id, { onDelete: 'set null' }),
+  title: varchar('title', { length: 255 }).notNull(),
+  description: text('description').notNull().default(''),
+  status: scheduleTaskStatusEnum('status').notNull().default('todo'),
+  assignee: varchar('assignee', { length: 127 }),
+  dueDate: timestamp('due_date'),
+  dependencyTaskId: varchar('dependency_task_id', { length: 36 }),
+  blockingReason: text('blocking_reason'),
+  position: integer('position').notNull().default(0),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => ({
+  milestoneIdx: index('schedule_tasks_milestone_idx').on(table.milestoneId),
+  workflowIdx: index('schedule_tasks_workflow_idx').on(table.workflowId),
+  statusIdx: index('schedule_tasks_status_idx').on(table.status),
+}));
+
+// ============ 人类介入闸门表 ============
+export const humanGates = pgTable('human_gates', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  workflowId: varchar('workflow_id', { length: 36 }).notNull().references(() => workflowInstances.id, { onDelete: 'cascade' }),
+  step: varchar('step', { length: 127 }).notNull(),
+  title: varchar('title', { length: 255 }).notNull(),
+  question: text('question').notNull(),
+  options: jsonb('options').notNull().default([]),
+  status: hitlGateStatusEnum('status').notNull().default('pending'),
+  selectedOption: text('selected_option'),
+  comment: text('comment'),
+  requestedBy: varchar('requested_by', { length: 127 }),
+  requestedAt: timestamp('requested_at').notNull().defaultNow(),
+  resolvedAt: timestamp('resolved_at'),
+  resolvedBy: varchar('resolved_by', { length: 127 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => ({
+  workflowIdx: index('human_gates_workflow_idx').on(table.workflowId),
+  statusIdx: index('human_gates_status_idx').on(table.status),
+}));
+
+// ============ 数据集表 ============
+export const datasets = pgTable('datasets', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  projectId: varchar('project_id', { length: 36 }).references(() => projects.id, { onDelete: 'set null' }),
+  name: varchar('name', { length: 255 }).notNull(),
+  source: varchar('source', { length: 255 }).notNull().default(''),
+  description: text('description').notNull().default(''),
+  license: varchar('license', { length: 255 }).notNull().default(''),
+  homepage: varchar('homepage', { length: 1024 }),
+  tags: jsonb('tags').notNull().default([]),
+  metadata: jsonb('metadata').notNull().default({}),
+  status: datasetStatusEnum('status').notNull().default('discovered'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => ({
+  projectIdx: index('datasets_project_idx').on(table.projectId),
+  statusIdx: index('datasets_status_idx').on(table.status),
+}));
+
+// ============ 数据集版本表 ============
+export const datasetVersions = pgTable('dataset_versions', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  datasetId: varchar('dataset_id', { length: 36 }).notNull().references(() => datasets.id, { onDelete: 'cascade' }),
+  version: varchar('version', { length: 127 }).notNull(),
+  splitInfo: jsonb('split_info').notNull().default({}),
+  filePath: varchar('file_path', { length: 1024 }),
+  checksum: varchar('checksum', { length: 255 }),
+  sizeBytes: integer('size_bytes').notNull().default(0),
+  buildRecipe: jsonb('build_recipe').notNull().default({}),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => ({
+  datasetIdx: index('dataset_versions_dataset_idx').on(table.datasetId),
+  datasetVersionIdx: uniqueIndex('dataset_versions_dataset_version_idx').on(table.datasetId, table.version),
+}));
+
+// ============ 论文库表 ============
+export const papers = pgTable('papers', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  projectId: varchar('project_id', { length: 36 }).references(() => projects.id, { onDelete: 'set null' }),
+  title: text('title').notNull(),
+  authors: jsonb('authors').notNull().default([]),
+  venue: varchar('venue', { length: 255 }),
+  year: integer('year'),
+  doi: varchar('doi', { length: 255 }),
+  url: varchar('url', { length: 1024 }),
+  pdfUrl: varchar('pdf_url', { length: 1024 }),
+  localPdfPath: varchar('local_pdf_path', { length: 1024 }),
+  abstract: text('abstract'),
+  tags: jsonb('tags').notNull().default([]),
+  notes: text('notes'),
+  status: paperStatusEnum('status').notNull().default('discovered'),
+  metadata: jsonb('metadata').notNull().default({}),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => ({
+  projectIdx: index('papers_project_idx').on(table.projectId),
+  statusIdx: index('papers_status_idx').on(table.status),
+}));
+
+// ============ 审稿与复盘表 ============
+export const researchReviews = pgTable('research_reviews', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  projectId: varchar('project_id', { length: 36 }).notNull().references(() => projects.id, { onDelete: 'cascade' }),
+  workflowId: varchar('workflow_id', { length: 36 }).references(() => workflowInstances.id, { onDelete: 'set null' }),
+  reportId: varchar('report_id', { length: 36 }).references(() => reports.id, { onDelete: 'set null' }),
+  title: varchar('title', { length: 255 }).notNull(),
+  review: jsonb('review').notNull().default({}),
+  retrospective: jsonb('retrospective').notNull().default({}),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => ({
+  projectIdx: index('research_reviews_project_idx').on(table.projectId),
+  workflowIdx: index('research_reviews_workflow_idx').on(table.workflowId),
 }));

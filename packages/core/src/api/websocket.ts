@@ -9,6 +9,7 @@ import { createLogger } from '../utils/logger';
 import { monitorService } from '../services/monitor/index';
 import { clusterService } from '../services/cluster/index';
 import { runService } from '../services/experiment/index';
+import { orchestratorService } from '../services/orchestrator/index';
 
 const logger = createLogger('websocket');
 
@@ -72,6 +73,13 @@ export class WebSocketService {
       this.broadcast({
         type: 'alert:new',
         data: alert,
+      });
+    });
+
+    orchestratorService.on('workflowEvent', (event) => {
+      this.broadcast({
+        type: 'workflow:event',
+        data: event,
       });
     });
   }

@@ -11,6 +11,7 @@ import { initDatabase } from './db/connection';
 import { loadConfig, getConfig } from './utils/config';
 import { createLogger } from './utils/logger';
 import { monitorService } from './services/monitor/index';
+import { orchestratorService } from './services/orchestrator/index';
 
 const logger = createLogger('main');
 
@@ -48,6 +49,10 @@ async function main() {
   monitorService.start();
   logger.info('Monitor service started');
 
+  // 启动自动编排服务
+  orchestratorService.start();
+  logger.info('Orchestrator service started');
+
   // 启动服务器
   const port = config.server.port;
   const host = config.server.host;
@@ -63,6 +68,7 @@ async function main() {
     logger.info('Shutting down...');
 
     monitorService.stop();
+    orchestratorService.stop();
     wsService.close();
 
     server.close(() => {

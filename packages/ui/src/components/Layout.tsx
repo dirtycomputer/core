@@ -4,7 +4,15 @@ import {
   FlaskConical,
   Activity,
   FileText,
-  Bell
+  Bell,
+  Settings,
+  Brain,
+  Bot,
+  Workflow,
+  CalendarRange,
+  Database,
+  Library,
+  FileSearch
 } from 'lucide-react';
 import { clsx } from 'clsx';
 
@@ -13,6 +21,14 @@ const navItems = [
   { to: '/experiments', icon: FlaskConical, label: '实验' },
   { to: '/monitor', icon: Activity, label: '监控' },
   { to: '/reports', icon: FileText, label: '报告' },
+  { to: '/deep-research', icon: Brain, label: 'DeepResearch' },
+  { to: '/workflows', icon: Workflow, label: '工作流' },
+  { to: '/roadmap', icon: CalendarRange, label: '日程' },
+  { to: '/datasets', icon: Database, label: '数据集' },
+  { to: '/library', icon: Library, label: '论文库' },
+  { to: '/reviews', icon: FileSearch, label: 'Review' },
+  { to: '/integrations/skill-seekers', icon: Bot, label: 'SkillSeekers' },
+  { to: '/settings', icon: Settings, label: '设置' },
 ];
 
 export default function Layout() {

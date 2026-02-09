@@ -81,6 +81,15 @@ export class AnalysisAgent {
   private provider: 'openai' | 'anthropic' = 'openai';
   private initialized = false;
 
+  /**
+   * 重置初始化状态，用于配置更新后重新初始化
+   */
+  resetInitialization() {
+    this.initialized = false;
+    this.openai = null;
+    this.anthropic = null;
+  }
+
   private ensureInitialized() {
     if (this.initialized) return;
 
@@ -90,10 +99,12 @@ export class AnalysisAgent {
     if (this.provider === 'openai' && config.llm.apiKey) {
       this.openai = new OpenAI({
         apiKey: config.llm.apiKey,
+        baseURL: config.llm.baseUrl || undefined,
       });
     } else if (this.provider === 'anthropic' && config.llm.apiKey) {
       this.anthropic = new Anthropic({
         apiKey: config.llm.apiKey,
+        baseURL: config.llm.baseUrl || undefined,
       });
     }
 
@@ -123,6 +134,10 @@ export class AnalysisAgent {
 
       return analysis;
     } catch (error) {
+      if (error instanceof Error && error.message === 'No LLM provider configured') {
+        logger.warn({ projectName: input.projectName }, 'LLM not configured, using fallback analysis');
+        return this.generateFallbackAnalysis(input);
+      }
       logger.error({ error, projectName: input.projectName }, 'Failed to analyze results');
       throw error;
     }
@@ -255,20 +270,25 @@ Research Goal: ${input.researchGoal}
         ],
         max_tokens: config.llm.maxTokens,
         temperature: 0.3,  // 分析任务使用较低温度
-        response_format: { type: 'json_object' },
       });
+
+      logger.debug({ response }, 'OpenAI response received');
+
+      if (!response.choices || response.choices.length === 0) {
+        logger.error({ response }, 'Invalid OpenAI response: no choices');
+        throw new Error('Invalid response from LLM: no choices returned');
+      }
 
       return response.choices[0]?.message?.content || '';
-    } else if (this.anthropic) {
-      const response = await this.anthropic.beta.messages.create({
-        model: config.llm.model.includes('claude') ? config.llm.model : 'claude-3-sonnet-20240229',
-        max_tokens: config.llm.maxTokens,
-        system: ANALYSIS_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userPrompt }],
+    } else if (this.provider === 'anthropic' && this.anthropic) {
+      const response = await this.anthropic.completions.create({
+        model: config.llm.model,
+        max_tokens_to_sample: config.llm.maxTokens,
+        prompt: `${Anthropic.HUMAN_PROMPT} ${ANALYSIS_SYSTEM_PROMPT}\n\n${userPrompt}${Anthropic.AI_PROMPT}`,
       });
 
-      const textBlock = response.content.find((block: { type: string }) => block.type === 'text');
-      return textBlock?.type === 'text' ? (textBlock as { type: 'text'; text: string }).text : '';
+      logger.debug({ response }, 'Anthropic response received');
+      return response.completion || '';
     }
 
     throw new Error('No LLM provider configured');
@@ -288,6 +308,72 @@ Research Goal: ${input.researchGoal}
       logger.error({ response }, 'Failed to parse analysis response');
       throw new Error('Invalid analysis format from LLM');
     }
+  }
+
+  private generateFallbackAnalysis(input: AnalysisInput): ExperimentAnalysis {
+    const baselineMetrics = input.baselineResult?.bestRun?.metrics || input.baselineResult?.averageMetrics || {};
+    const baselineAccuracy = baselineMetrics.accuracy || 0;
+
+    const performanceComparison = input.results.map((result) => {
+      const metrics = result.bestRun?.metrics || result.averageMetrics || {};
+      const currentAccuracy = metrics.accuracy || 0;
+      return {
+        experimentName: result.experiment.name,
+        metrics: metrics as Record<string, number>,
+        vsBaseline: baselineAccuracy
+          ? { accuracy: Number((currentAccuracy - baselineAccuracy).toFixed(4)) }
+          : undefined,
+      };
+    });
+
+    const ranked = [...performanceComparison].sort(
+      (a, b) => (b.metrics.accuracy || 0) - (a.metrics.accuracy || 0)
+    );
+
+    const best = ranked[0];
+    const bestAcc = best?.metrics.accuracy || 0;
+    const delta = baselineAccuracy ? bestAcc - baselineAccuracy : 0;
+
+    return {
+      summary: `Fallback analysis completed for ${input.projectName}; best candidate is ${best?.experimentName || 'N/A'}.`,
+      keyFindings: [
+        `Evaluated ${input.results.length} experiment variants under current setup.`,
+        `Best observed accuracy: ${bestAcc.toFixed(4)}.`,
+        baselineAccuracy
+          ? `Compared with baseline, delta accuracy is ${delta >= 0 ? '+' : ''}${delta.toFixed(4)}.`
+          : 'No explicit baseline metrics were provided.',
+      ],
+      performanceComparison,
+      insights: [
+        'CPU test run indicates workflow is operational, but final quality still needs larger-scale validation.',
+        'Priority should be given to the highest-accuracy variant and one controlled ablation.',
+      ],
+      recommendations: [
+        'Promote the best variant into a longer validation run.',
+        'Run at least one ablation that removes the key changed component.',
+      ],
+      suggestedNextSteps: [
+        {
+          action: 'Execute extended run on best variant',
+          rationale: 'Confirm stability over longer steps',
+          priority: 'high',
+        },
+        {
+          action: 'Run targeted ablation',
+          rationale: 'Verify contribution of critical component',
+          priority: 'high',
+        },
+        {
+          action: 'Prepare final report',
+          rationale: 'Document reproducible setup and results',
+          priority: 'medium',
+        },
+      ],
+      limitations: [
+        'Fallback analysis is heuristic and does not replace a true LLM-based qualitative review.',
+        'CPU-scale metrics may not extrapolate to GPU-scale training dynamics.',
+      ],
+    };
   }
 }
 

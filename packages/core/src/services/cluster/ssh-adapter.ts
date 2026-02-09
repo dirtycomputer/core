@@ -36,12 +36,15 @@ interface SSHJob {
   endTime?: Date;
   logPath: string;
   pidFile: string;
+  exitCode?: number;
+  logs?: string[];
 }
 
 export class SSHAdapter implements ClusterAdapter {
   readonly type = 'ssh' as const;
   private config: SSHConfig;
   private jobs: Map<string, SSHJob> = new Map();
+  private readonly isMock: boolean;
 
   constructor(config: SSHConfig) {
     this.config = {
@@ -52,6 +55,7 @@ export class SSHAdapter implements ClusterAdapter {
       privateKeyPath: config.privateKeyPath,
       privateKey: config.privateKey,
     };
+    this.isMock = this.config.host === 'mock';
   }
 
   private async getConnection(): Promise<Client> {
@@ -109,6 +113,7 @@ export class SSHAdapter implements ClusterAdapter {
   }
 
   async isAvailable(): Promise<boolean> {
+    if (this.isMock) return true;
     try {
       const conn = await this.getConnection();
       conn.end();
@@ -120,6 +125,43 @@ export class SSHAdapter implements ClusterAdapter {
 
   async submit(job: JobSpec): Promise<JobHandle> {
     const jobId = `ssh-${generateShortId()}`;
+
+    if (this.isMock) {
+      const now = new Date();
+      const mockJob: SSHJob = {
+        id: jobId,
+        state: 'queued',
+        startTime: now,
+        logPath: `mock://${jobId}.log`,
+        pidFile: `mock://${jobId}.pid`,
+        logs: [
+          `[${now.toISOString()}] queued`,
+          `[${now.toISOString()}] preparing CPU environment`,
+        ],
+      };
+      this.jobs.set(jobId, mockJob);
+
+      setTimeout(() => {
+        const target = this.jobs.get(jobId);
+        if (!target || target.state === 'cancelled') return;
+        target.state = 'running';
+        target.startTime = new Date();
+        target.logs?.push(`[${new Date().toISOString()}] running CPU task`);
+      }, 1200);
+
+      setTimeout(() => {
+        const target = this.jobs.get(jobId);
+        if (!target || target.state === 'cancelled') return;
+        target.state = 'completed';
+        target.endTime = new Date();
+        target.exitCode = 0;
+        target.logs?.push(`[${new Date().toISOString()}] task completed`);
+      }, 5200);
+
+      logger.info({ jobId }, 'Mock SSH job submitted');
+      return { jobId, clusterType: 'ssh', submittedAt: new Date() };
+    }
+
     const logPath = `${job.workDir}/${jobId}.log`;
     const pidFile = `${job.workDir}/${jobId}.pid`;
     const scriptPath = `${job.workDir}/${jobId}.sh`;
@@ -168,6 +210,16 @@ export class SSHAdapter implements ClusterAdapter {
       return { jobId, state: 'unknown' };
     }
 
+    if (this.isMock) {
+      return {
+        jobId,
+        state: job.state,
+        startTime: job.startTime,
+        endTime: job.endTime,
+        exitCode: job.exitCode,
+      };
+    }
+
     if (!job.pid) {
       return { jobId, state: job.state };
     }
@@ -206,7 +258,20 @@ export class SSHAdapter implements ClusterAdapter {
 
   async cancel(jobId: string): Promise<void> {
     const job = this.jobs.get(jobId);
-    if (!job || !job.pid) {
+    if (!job) {
+      return;
+    }
+
+    if (this.isMock) {
+      job.state = 'cancelled';
+      job.endTime = new Date();
+      job.exitCode = 130;
+      job.logs?.push(`[${new Date().toISOString()}] task cancelled`);
+      logger.info({ jobId }, 'Mock SSH job cancelled');
+      return;
+    }
+
+    if (!job.pid) {
       return;
     }
 
@@ -220,6 +285,15 @@ export class SSHAdapter implements ClusterAdapter {
   async *logs(jobId: string, options?: { follow?: boolean; tail?: number }): AsyncIterable<LogEntry> {
     const job = this.jobs.get(jobId);
     if (!job) {
+      return;
+    }
+
+    if (this.isMock) {
+      const lines = job.logs || [];
+      const tail = options?.tail ? lines.slice(-options.tail) : lines;
+      for (const line of tail) {
+        yield { timestamp: new Date(), stream: 'stdout', message: line };
+      }
       return;
     }
 
@@ -271,7 +345,23 @@ export class SSHAdapter implements ClusterAdapter {
 
   async metrics(jobId: string): Promise<JobMetrics> {
     const job = this.jobs.get(jobId);
-    if (!job || !job.pid) {
+    if (!job) {
+      return { jobId };
+    }
+
+    if (this.isMock) {
+      if (job.state === 'running') {
+        return {
+          jobId,
+          cpuUsage: 35 + Math.random() * 30,
+          memoryUsage: 30 + Math.random() * 20,
+          wallTime: job.startTime ? Math.floor((Date.now() - job.startTime.getTime()) / 1000) : 0,
+        };
+      }
+      return { jobId, cpuUsage: 0, memoryUsage: 0 };
+    }
+
+    if (!job.pid) {
       return { jobId };
     }
 

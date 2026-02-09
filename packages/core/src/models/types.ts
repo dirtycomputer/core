@@ -224,3 +224,196 @@ export interface User {
   createdAt: Date;
   lastLoginAt?: Date;
 }
+
+// ============ 工作流 (Workflow) ============
+export type WorkflowStatus = 'pending' | 'running' | 'waiting_human' | 'completed' | 'failed' | 'cancelled';
+export type WorkflowTaskStatus = 'pending' | 'leased' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type WorkflowEventLevel = 'info' | 'warning' | 'error';
+
+export interface WorkflowInstance {
+  id: string;
+  projectId: string;
+  name: string;
+  status: WorkflowStatus;
+  currentStep: string;
+  context: Record<string, unknown>;
+  errorMessage?: string;
+  cancelRequested: boolean;
+  startedAt?: Date;
+  completedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface WorkflowTask {
+  id: string;
+  workflowId: string;
+  step: string;
+  status: WorkflowTaskStatus;
+  payload: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  attempts: number;
+  maxAttempts: number;
+  runAfter: Date;
+  leaseUntil?: Date;
+  idempotencyKey?: string;
+  errorMessage?: string;
+  startedAt?: Date;
+  completedAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface WorkflowEvent {
+  id: string;
+  workflowId: string;
+  taskId?: string;
+  type: string;
+  level: WorkflowEventLevel;
+  message: string;
+  data: Record<string, unknown>;
+  createdAt: Date;
+}
+
+// ============ 项目日程 ============
+export type MilestoneStatus = 'pending' | 'in_progress' | 'completed' | 'blocked';
+export type ScheduleTaskStatus = 'todo' | 'in_progress' | 'waiting_review' | 'done' | 'blocked';
+
+export interface Milestone {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  dueDate?: Date;
+  status: MilestoneStatus;
+  position: number;
+  owner?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ScheduleTask {
+  id: string;
+  milestoneId: string;
+  workflowId?: string;
+  title: string;
+  description: string;
+  status: ScheduleTaskStatus;
+  assignee?: string;
+  dueDate?: Date;
+  dependencyTaskId?: string;
+  blockingReason?: string;
+  position: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ============ 人类介入闸门 (HITL) ============
+export type HitlGateStatus = 'pending' | 'approved' | 'rejected' | 'changes_requested' | 'timeout';
+
+export interface HumanGate {
+  id: string;
+  workflowId: string;
+  step: string;
+  title: string;
+  question: string;
+  options: string[];
+  status: HitlGateStatus;
+  selectedOption?: string;
+  comment?: string;
+  requestedBy?: string;
+  requestedAt: Date;
+  resolvedAt?: Date;
+  resolvedBy?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ============ 数据集管理 ============
+export type DatasetStatus = 'discovered' | 'curated' | 'ready' | 'archived';
+
+export interface DatasetRecord {
+  id: string;
+  projectId?: string;
+  name: string;
+  source: string;
+  description: string;
+  license: string;
+  homepage?: string;
+  tags: string[];
+  metadata: Record<string, unknown>;
+  status: DatasetStatus;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface DatasetVersion {
+  id: string;
+  datasetId: string;
+  version: string;
+  splitInfo: Record<string, unknown>;
+  filePath?: string;
+  checksum?: string;
+  sizeBytes: number;
+  buildRecipe: Record<string, unknown>;
+  createdAt: Date;
+}
+
+// ============ 论文库 ============
+export type PaperStatus = 'discovered' | 'downloaded' | 'archived';
+
+export interface PaperRecord {
+  id: string;
+  projectId?: string;
+  title: string;
+  authors: string[];
+  venue?: string;
+  year?: number;
+  doi?: string;
+  url?: string;
+  pdfUrl?: string;
+  localPdfPath?: string;
+  abstract?: string;
+  tags: string[];
+  notes?: string;
+  status: PaperStatus;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// ============ 审稿与复盘 ============
+export interface PaperReview {
+  overallScore: number;
+  novelty: number;
+  soundness: number;
+  reproducibility: number;
+  clarity: number;
+  decision: 'accept' | 'weak_accept' | 'borderline' | 'weak_reject' | 'reject';
+  strengths: string[];
+  weaknesses: string[];
+  suggestions: string[];
+}
+
+export interface Retrospective {
+  summary: string;
+  whatWorked: string[];
+  whatDidNotWork: string[];
+  actionItems: Array<{
+    action: string;
+    priority: 'high' | 'medium' | 'low';
+    owner?: string;
+  }>;
+}
+
+export interface ResearchReviewRecord {
+  id: string;
+  projectId: string;
+  workflowId?: string;
+  reportId?: string;
+  title: string;
+  review: PaperReview;
+  retrospective: Retrospective;
+  createdAt: Date;
+  updatedAt: Date;
+}

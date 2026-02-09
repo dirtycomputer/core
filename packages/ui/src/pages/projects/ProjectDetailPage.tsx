@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -7,6 +7,8 @@ import {
   Plus,
   ChevronRight,
   FlaskConical,
+  Loader2,
+  CheckCircle2,
 } from 'lucide-react';
 import { projectsApi, experimentGroupsApi, aiApi } from '@/api/client';
 
@@ -175,14 +177,43 @@ function GeneratePlanModal({
   onClose: () => void;
 }) {
   const [isGenerating, setIsGenerating] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [activeStepIndex, setActiveStepIndex] = useState(-1);
+  const [generationError, setGenerationError] = useState('');
   const [plan, setPlan] = useState<any>(null);
   const [constraints, setConstraints] = useState({
     budget: '',
     maxExperiments: '',
   });
   const queryClient = useQueryClient();
+  const generationSteps = [
+    '解析研究目标与约束',
+    '设计实验组与变量',
+    '估算资源与风险',
+    '整理为可执行计划',
+  ];
+
+  useEffect(() => {
+    if (!isGenerating) {
+      setElapsedSeconds(0);
+      setActiveStepIndex(-1);
+      return;
+    }
+
+    const startedAt = Date.now();
+    setActiveStepIndex(0);
+
+    const timer = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      setElapsedSeconds(elapsed);
+      setActiveStepIndex(Math.min(Math.floor(elapsed / 4), generationSteps.length - 1));
+    }, 500);
+
+    return () => clearInterval(timer);
+  }, [isGenerating]);
 
   const handleGenerate = async () => {
+    setGenerationError('');
     setIsGenerating(true);
     try {
       const result = await aiApi.generatePlan({
@@ -196,7 +227,9 @@ function GeneratePlanModal({
         },
       });
       setPlan(result);
-    } catch (error) {
+    } catch (error: any) {
+      const apiError = error?.response?.data?.error;
+      setGenerationError(apiError || '生成失败，请稍后重试或缩小约束范围。');
       console.error('Failed to generate plan:', error);
     } finally {
       setIsGenerating(false);
@@ -265,6 +298,44 @@ function GeneratePlanModal({
                   />
                 </div>
               </div>
+
+              {generationError && (
+                <div className="p-3 rounded-lg bg-red-50 text-red-700 text-sm">
+                  {generationError}
+                </div>
+              )}
+
+              {isGenerating && (
+                <div className="p-4 rounded-lg border bg-gray-50 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                      <Loader2 className="w-4 h-4 animate-spin text-primary-600" />
+                      AI 正在生成计划
+                    </div>
+                    <div className="text-xs text-gray-500">已耗时 {elapsedSeconds}s</div>
+                  </div>
+                  <div className="space-y-2">
+                    {generationSteps.map((step, index) => {
+                      const done = index < activeStepIndex;
+                      const active = index === activeStepIndex;
+                      return (
+                        <div key={step} className="flex items-center gap-2 text-sm">
+                          {done ? (
+                            <CheckCircle2 className="w-4 h-4 text-green-600" />
+                          ) : active ? (
+                            <Loader2 className="w-4 h-4 animate-spin text-primary-600" />
+                          ) : (
+                            <div className="w-4 h-4 rounded-full border border-gray-300" />
+                          )}
+                          <span className={done || active ? 'text-gray-800' : 'text-gray-400'}>
+                            {step}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-4">
@@ -307,6 +378,7 @@ function GeneratePlanModal({
         <div className="p-4 border-t flex justify-end gap-3">
           <button
             onClick={onClose}
+            disabled={isGenerating}
             className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
           >
             取消

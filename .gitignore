@@ -50,6 +50,7 @@ checkpoints/
 *.ckpt
 *.pt
 *.pth
+integrations/Skill_Seekers/
 
 # LaTeX
 *.aux
@@ -58,3 +59,10 @@ checkpoints/
 *.fdb_latexmk
 *.fls
 *.synctex.gz
+# Playwright
+playwright-report/
+test-results/
+
+# Local runtime artifacts
+.run-logs/
+packages/core/reports/

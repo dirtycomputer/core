@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { FlaskConical, Play, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { experimentsApi } from '@/api/client';
@@ -78,9 +79,12 @@ export default function ExperimentsPage() {
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <button className="text-sm text-primary-600 hover:text-primary-700">
+                    <Link
+                      to={`/experiments/${exp.id}`}
+                      className="text-sm text-primary-600 hover:text-primary-700"
+                    >
                       查看详情
-                    </button>
+                    </Link>
                   </td>
                 </tr>
               ))}

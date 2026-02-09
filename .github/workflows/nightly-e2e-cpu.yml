@@ -1,0 +1,108 @@
+name: Nightly CPU E2E Validation
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  nightly-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: roc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      NODE_ENV: development
+      SERVER_PORT: 3000
+      SERVER_HOST: 0.0.0.0
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_NAME: roc
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_SSL: "false"
+      CLUSTER_TYPE: ssh
+      SSH_HOST: mock
+      SSH_USERNAME: mock
+      SSH_PORT: 22
+      MLFLOW_ENABLED: "false"
+      TENSORBOARD_ENABLED: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Run database migration
+        run: pnpm --filter @roc/core run db:migrate
+
+      - name: Ensure default user exists
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:5432/roc" <<'SQL'
+          INSERT INTO users (id, email, name, role, created_at)
+          VALUES ('default-user', 'default-user@example.com', 'Default User', 'researcher', NOW())
+          ON CONFLICT (id) DO NOTHING;
+          SQL
+
+      - name: Start core API
+        run: |
+          nohup pnpm --filter @roc/core dev > core.log 2>&1 &
+          echo $! > core.pid
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null; then
+              echo "core is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "core failed to start"
+          cat core.log
+          exit 1
+
+      - name: Run CPU end-to-end validation
+        run: node scripts/e2e-cpu-validation.mjs
+
+      - name: Upload validation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-cpu-e2e-artifacts
+          path: |
+            artifacts/e2e/*.tex
+            core.log
+            core.pid
+          if-no-files-found: warn
+
+      - name: Show core logs on failure
+        if: failure()
+        run: cat core.log
