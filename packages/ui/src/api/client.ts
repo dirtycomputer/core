@@ -213,6 +213,15 @@ export const skillSeekersApi = {
     buildImage?: boolean;
     verbose?: boolean;
   }) => api.post('/integrations/skill-seekers/run-scrape', data).then((res) => res.data),
+  createCustomConfig: (data: {
+    name: string;
+    description?: string;
+    sourceType: 'documentation' | 'github';
+    baseUrl?: string;
+    repo?: string;
+    maxPages?: number;
+    configPath?: string;
+  }) => api.post('/integrations/skill-seekers/custom-configs', data).then((res) => res.data),
 };
 
 // 自动工作流 API
@@ -341,6 +350,19 @@ export const datasetsApi = {
     buildRecipe?: Record<string, unknown>;
     syntheticRows?: Array<Record<string, unknown>>;
   }) => api.post(`/datasets/${id}/construct`, data).then((res) => res.data),
+
+  analyze: (id: string, data?: {
+    sampleRows?: Array<Record<string, unknown>>;
+    labelField?: string;
+    maxRows?: number;
+  }) => api.post(`/datasets/${id}/analyze`, data || {}).then((res) => res.data),
+
+  strategy: (id: string, data?: {
+    sampleRows?: Array<Record<string, unknown>>;
+    labelField?: string;
+    targetTask?: string;
+    preferredVersion?: string;
+  }) => api.post(`/datasets/${id}/construct-strategy`, data || {}).then((res) => res.data),
 };
 
 // 阅读代理 / 论文库 API
@@ -392,6 +414,18 @@ export const readingApi = {
   pdfUrl: (id: string) => `/api/reading/papers/${id}/pdf`,
 
   summarize: (id: string) => api.post(`/reading/papers/${id}/summarize`).then((res) => res.data),
+
+  extract: (id: string, data?: {
+    engine?: 'auto' | 'mineru' | 'glm_ocr' | 'deepseek_ocr' | 'fallback';
+    maxPages?: number;
+    force?: boolean;
+  }) => api.post(`/reading/papers/${id}/extract`, data || {}).then((res) => res.data),
+
+  blog: (id: string, data?: {
+    style?: 'alpharxiv' | 'technical' | 'plain';
+    language?: 'zh' | 'en';
+    force?: boolean;
+  }) => api.post(`/reading/papers/${id}/blog`, data || {}).then((res) => res.data),
 };
 
 // 审稿与复盘 API

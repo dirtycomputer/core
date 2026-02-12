@@ -1,7 +1,10 @@
 import axios from 'axios';
 import OpenAI from 'openai';
 import { and, desc, eq } from 'drizzle-orm';
+import { existsSync } from 'fs';
 import { mkdir, writeFile, stat } from 'fs/promises';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { join } from 'path';
 import { getDatabase } from '../../db/connection';
 import { papers } from '../../models/schema';
@@ -9,8 +12,16 @@ import { getConfig } from '../../utils/config';
 import { generateId } from '../../utils/id';
 import { createLogger } from '../../utils/logger';
 import type { PaperRecord, PaperStatus } from '../../models/types';
+import {
+  buildAlphaBlogPost,
+  buildStructuredPaperInfo,
+  type AlphaBlogPost,
+  type OcrEngine,
+  type StructuredPaperInfo,
+} from './reading-insights';
 
 const logger = createLogger('service:reading');
+const execFileAsync = promisify(execFile);
 
 export interface PaperSearchResult {
   title: string;
@@ -53,6 +64,18 @@ export interface UpdatePaperInput {
   status?: PaperStatus;
   localPdfPath?: string | null;
   metadata?: Record<string, unknown>;
+}
+
+export interface ExtractStructuredInput {
+  engine?: OcrEngine;
+  maxPages?: number;
+  force?: boolean;
+}
+
+export interface GenerateBlogInput {
+  style?: 'alpharxiv' | 'technical' | 'plain';
+  language?: 'zh' | 'en';
+  force?: boolean;
 }
 
 export class ReadingService {
@@ -335,6 +358,128 @@ export class ReadingService {
     return 'No summary generated.';
   }
 
+  async extractStructured(paperId: string, input: ExtractStructuredInput = {}): Promise<StructuredPaperInfo> {
+    const paper = await this.getById(paperId);
+    if (!paper) {
+      throw new Error('Paper not found');
+    }
+
+    const metadata = (paper.metadata || {}) as Record<string, unknown>;
+    if (!input.force && metadata.structured && typeof metadata.structured === 'object') {
+      return metadata.structured as StructuredPaperInfo;
+    }
+
+    const order = this.resolveOcrOrder(input.engine || 'auto');
+    let engineUsed: OcrEngine = 'fallback';
+    let rawText = '';
+
+    for (const candidate of order) {
+      if (candidate === 'fallback') {
+        rawText = await this.extractTextFallback(paper, input.maxPages || 5);
+        engineUsed = 'fallback';
+        if (rawText.trim()) break;
+        continue;
+      }
+
+      const text = await this.tryExternalOcr(candidate, paper, input.maxPages || 5);
+      if (text.trim()) {
+        rawText = text;
+        engineUsed = candidate;
+        break;
+      }
+    }
+
+    const structured = buildStructuredPaperInfo({
+      title: paper.title,
+      authors: paper.authors || [],
+      abstract: paper.abstract,
+      rawText,
+      metadata,
+      engineUsed,
+    });
+
+    const updated = await this.update(paperId, {
+      metadata: {
+        ...metadata,
+        structured,
+        ocr: {
+          engineUsed,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    });
+
+    if (!updated) {
+      throw new Error('Failed to persist structured reading result');
+    }
+
+    return structured;
+  }
+
+  async generateBlog(paperId: string, input: GenerateBlogInput = {}): Promise<AlphaBlogPost> {
+    const paper = await this.getById(paperId);
+    if (!paper) {
+      throw new Error('Paper not found');
+    }
+
+    const metadata = (paper.metadata || {}) as Record<string, unknown>;
+    if (!input.force && metadata.blogPost && typeof metadata.blogPost === 'object') {
+      return metadata.blogPost as AlphaBlogPost;
+    }
+
+    const structured = await this.extractStructured(paperId, { force: false });
+    let blog = buildAlphaBlogPost({
+      structured,
+      style: input.style || 'alpharxiv',
+      language: input.language || 'zh',
+    });
+
+    // Optional LLM rewrite for more fluent prose.
+    const cfg = getConfig();
+    if (cfg.llm.apiKey) {
+      try {
+        const client = new OpenAI({ apiKey: cfg.llm.apiKey, baseURL: cfg.llm.baseUrl || undefined });
+        const completion = await client.chat.completions.create({
+          model: cfg.llm.model,
+          temperature: 0.3,
+          max_tokens: 1200,
+          messages: [
+            {
+              role: 'system',
+              content: 'You convert structured paper notes into a concise markdown blog. Keep headings, keep technical correctness, avoid hallucination.',
+            },
+            {
+              role: 'user',
+              content: `Style=${input.style || 'alpharxiv'}; Language=${input.language || 'zh'}\n\n${blog.markdown}`,
+            },
+          ],
+        });
+        const content = completion.choices?.[0]?.message?.content;
+        if (typeof content === 'string' && content.trim()) {
+          blog = {
+            ...blog,
+            markdown: content.trim(),
+          };
+        }
+      } catch (error) {
+        logger.warn({ error, paperId }, 'LLM rewrite for blog failed, using fallback blog');
+      }
+    }
+
+    const updated = await this.update(paperId, {
+      metadata: {
+        ...metadata,
+        blogPost: blog,
+      },
+    });
+
+    if (!updated) {
+      throw new Error('Failed to persist blog output');
+    }
+
+    return blog;
+  }
+
   private pickXml(segment: string, tag: string): string | undefined {
     const match = segment.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`));
     return match?.[1];
@@ -360,6 +505,84 @@ export class ReadingService {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
+  }
+
+  private resolveOcrOrder(engine: OcrEngine): Array<Exclude<OcrEngine, 'auto'>> {
+    if (engine === 'auto') return ['mineru', 'glm_ocr', 'deepseek_ocr', 'fallback'];
+    if (engine === 'fallback') return ['fallback'];
+    return [engine, 'fallback'];
+  }
+
+  private async tryExternalOcr(engine: Exclude<OcrEngine, 'auto' | 'fallback'>, paper: PaperRecord, maxPages: number): Promise<string> {
+    const endpointMap: Record<typeof engine, string | undefined> = {
+      mineru: process.env.MINERU_OCR_API_URL,
+      glm_ocr: process.env.GLM_OCR_API_URL,
+      deepseek_ocr: process.env.DEEPSEEK_OCR_API_URL,
+    };
+    const keyMap: Record<typeof engine, string | undefined> = {
+      mineru: process.env.MINERU_OCR_API_KEY,
+      glm_ocr: process.env.GLM_OCR_API_KEY,
+      deepseek_ocr: process.env.DEEPSEEK_OCR_API_KEY,
+    };
+
+    const url = endpointMap[engine];
+    if (!url) return '';
+
+    try {
+      const response = await axios.post(
+        url,
+        {
+          paperId: paper.id,
+          title: paper.title,
+          pdfUrl: paper.pdfUrl || paper.url,
+          localPdfPath: paper.localPdfPath,
+          maxPages,
+        },
+        {
+          timeout: 45000,
+          headers: keyMap[engine]
+            ? { Authorization: `Bearer ${keyMap[engine]}` }
+            : undefined,
+        }
+      );
+
+      const text = response.data?.text || response.data?.content || '';
+      if (typeof text === 'string') {
+        return text;
+      }
+      return '';
+    } catch (error) {
+      logger.warn({ error, paperId: paper.id, engine }, 'External OCR engine failed');
+      return '';
+    }
+  }
+
+  private async extractTextFallback(paper: PaperRecord, maxPages: number): Promise<string> {
+    const chunks: string[] = [];
+    if (paper.abstract) chunks.push(paper.abstract);
+
+    if (paper.localPdfPath && existsSync(paper.localPdfPath)) {
+      try {
+        const { stdout } = await execFileAsync('pdftotext', [
+          '-f',
+          '1',
+          '-l',
+          String(Math.max(1, Math.min(maxPages, 30))),
+          '-layout',
+          '-enc',
+          'UTF-8',
+          paper.localPdfPath,
+          '-',
+        ], { timeout: 45000, maxBuffer: 5 * 1024 * 1024 });
+        if (stdout && typeof stdout === 'string') {
+          chunks.push(stdout);
+        }
+      } catch (error) {
+        logger.warn({ error, paperId: paper.id }, 'pdftotext fallback failed');
+      }
+    }
+
+    return chunks.join('\n\n').trim();
   }
 }
 

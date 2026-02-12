@@ -546,6 +546,22 @@ apiRouter.post('/integrations/skill-seekers/run-scrape', asyncHandler(async (req
   res.json(result);
 }));
 
+const skillSeekersCustomConfigSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  sourceType: z.enum(['documentation', 'github']),
+  baseUrl: z.string().url().optional(),
+  repo: z.string().optional(),
+  maxPages: z.number().int().positive().max(2000).optional(),
+  configPath: z.string().optional(),
+});
+
+apiRouter.post('/integrations/skill-seekers/custom-configs', asyncHandler(async (req, res) => {
+  const input = skillSeekersCustomConfigSchema.parse(req.body || {});
+  const config = await skillSeekersService.createCustomConfig(input);
+  res.status(201).json(config);
+}));
+
 // ============ 自动工作流 API ============
 
 const createWorkflowSchema = z.object({
@@ -828,6 +844,31 @@ apiRouter.post('/datasets/:id/construct', asyncHandler(async (req, res) => {
   res.status(201).json(version);
 }));
 
+const analyzeDatasetSchema = z.object({
+  sampleRows: z.array(z.record(z.unknown())).optional(),
+  labelField: z.string().optional(),
+  maxRows: z.number().int().positive().max(5000).optional(),
+});
+
+apiRouter.post('/datasets/:id/analyze', asyncHandler(async (req, res) => {
+  const input = analyzeDatasetSchema.parse(req.body || {});
+  const analysis = await datasetService.analyze(req.params.id, input);
+  res.json(analysis);
+}));
+
+const constructStrategySchema = z.object({
+  sampleRows: z.array(z.record(z.unknown())).optional(),
+  labelField: z.string().optional(),
+  targetTask: z.string().optional(),
+  preferredVersion: z.string().optional(),
+});
+
+apiRouter.post('/datasets/:id/construct-strategy', asyncHandler(async (req, res) => {
+  const input = constructStrategySchema.parse(req.body || {});
+  const strategy = await datasetService.recommendConstruction(req.params.id, input);
+  res.json(strategy);
+}));
+
 // ============ 阅读代理 / 论文库 API ============
 
 const paperSearchSchema = z.object({
@@ -950,6 +991,30 @@ apiRouter.get('/reading/papers/:id/pdf', asyncHandler(async (req, res) => {
 apiRouter.post('/reading/papers/:id/summarize', asyncHandler(async (req, res) => {
   const summary = await readingService.summarize(req.params.id);
   res.json({ summary });
+}));
+
+const extractPaperSchema = z.object({
+  engine: z.enum(['auto', 'mineru', 'glm_ocr', 'deepseek_ocr', 'fallback']).optional(),
+  maxPages: z.number().int().positive().max(30).optional(),
+  force: z.boolean().optional(),
+});
+
+apiRouter.post('/reading/papers/:id/extract', asyncHandler(async (req, res) => {
+  const input = extractPaperSchema.parse(req.body || {});
+  const structured = await readingService.extractStructured(req.params.id, input);
+  res.json(structured);
+}));
+
+const generateBlogSchema = z.object({
+  style: z.enum(['alpharxiv', 'technical', 'plain']).optional(),
+  language: z.enum(['zh', 'en']).optional(),
+  force: z.boolean().optional(),
+});
+
+apiRouter.post('/reading/papers/:id/blog', asyncHandler(async (req, res) => {
+  const input = generateBlogSchema.parse(req.body || {});
+  const blog = await readingService.generateBlog(req.params.id, input);
+  res.json(blog);
 }));
 
 // ============ 审稿与复盘 API ============

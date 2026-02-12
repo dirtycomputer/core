@@ -8,6 +8,8 @@ export default function DatasetsPage() {
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [versionInput, setVersionInput] = useState<Record<string, string>>({});
+  const [analysisByDatasetId, setAnalysisByDatasetId] = useState<Record<string, any>>({});
+  const [strategyByDatasetId, setStrategyByDatasetId] = useState<Record<string, any>>({});
 
   const { data: projectsData } = useQuery({
     queryKey: ['projects'],
@@ -51,6 +53,39 @@ export default function DatasetsPage() {
           { text: 'example row 1', label: 'positive' },
           { text: 'example row 2', label: 'negative' },
         ],
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['datasets', selectedProjectId] });
+    },
+  });
+
+  const analyzeMutation = useMutation({
+    mutationFn: (datasetId: string) => datasetsApi.analyze(datasetId, { labelField: 'label', maxRows: 1000 }),
+    onSuccess: (data: any, datasetId: string) => {
+      setAnalysisByDatasetId((prev) => ({ ...prev, [datasetId]: data }));
+    },
+  });
+
+  const strategyMutation = useMutation({
+    mutationFn: (datasetId: string) =>
+      datasetsApi.strategy(datasetId, {
+        labelField: 'label',
+        targetTask: 'classification',
+      }),
+    onSuccess: (data: any, datasetId: string) => {
+      setStrategyByDatasetId((prev) => ({ ...prev, [datasetId]: data }));
+      if (data?.versionSuggestion) {
+        setVersionInput((prev) => ({ ...prev, [datasetId]: prev[datasetId] || data.versionSuggestion }));
+      }
+    },
+  });
+
+  const strategyConstructMutation = useMutation({
+    mutationFn: ({ datasetId, strategy, version }: { datasetId: string; strategy: any; version: string }) =>
+      datasetsApi.construct(datasetId, {
+        version,
+        splitInfo: strategy?.splitInfo || {},
+        buildRecipe: strategy?.buildRecipe || {},
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['datasets', selectedProjectId] });
@@ -157,6 +192,19 @@ export default function DatasetsPage() {
                   if (!version) return;
                   constructMutation.mutate({ datasetId: dataset.id, version });
                 }}
+                onAnalyze={() => analyzeMutation.mutate(dataset.id)}
+                onStrategy={() => strategyMutation.mutate(dataset.id)}
+                onStrategyConstruct={() => {
+                  const strategy = strategyByDatasetId[dataset.id];
+                  const version = (versionInput[dataset.id] || strategy?.versionSuggestion || '').trim();
+                  if (!strategy || !version) return;
+                  strategyConstructMutation.mutate({ datasetId: dataset.id, strategy, version });
+                }}
+                analysis={analysisByDatasetId[dataset.id]}
+                strategy={strategyByDatasetId[dataset.id]}
+                analyzing={analyzeMutation.isPending && analyzeMutation.variables === dataset.id}
+                strategizing={strategyMutation.isPending && strategyMutation.variables === dataset.id}
+                strategyConstructing={strategyConstructMutation.isPending && strategyConstructMutation.variables?.datasetId === dataset.id}
               />
             ))}
           </div>
@@ -171,11 +219,27 @@ function DatasetCard({
   version,
   onVersionChange,
   onConstruct,
+  onAnalyze,
+  onStrategy,
+  onStrategyConstruct,
+  analysis,
+  strategy,
+  analyzing,
+  strategizing,
+  strategyConstructing,
 }: {
   dataset: any;
   version: string;
   onVersionChange: (value: string) => void;
   onConstruct: () => void;
+  onAnalyze: () => void;
+  onStrategy: () => void;
+  onStrategyConstruct: () => void;
+  analysis?: any;
+  strategy?: any;
+  analyzing?: boolean;
+  strategizing?: boolean;
+  strategyConstructing?: boolean;
 }) {
   const { data: versions = [] } = useQuery({
     queryKey: ['dataset-versions', dataset.id],
@@ -207,6 +271,67 @@ function DatasetCard({
           构造版本
         </button>
       </div>
+
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button
+          onClick={onAnalyze}
+          className="px-3 py-1.5 text-xs border rounded hover:bg-gray-50"
+          disabled={analyzing}
+        >
+          {analyzing ? '分析中...' : 'EDA/质量评分'}
+        </button>
+        <button
+          onClick={onStrategy}
+          className="px-3 py-1.5 text-xs border rounded hover:bg-gray-50"
+          disabled={strategizing}
+        >
+          {strategizing ? '生成中...' : '策略建议'}
+        </button>
+        <button
+          onClick={onStrategyConstruct}
+          className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-60"
+          disabled={!strategy || strategyConstructing}
+        >
+          {strategyConstructing ? '构造中...' : '按策略构造'}
+        </button>
+      </div>
+
+      {analysis && (
+        <div className="mt-3 p-3 border rounded bg-gray-50">
+          <div className="text-xs text-gray-500">数据质量评分</div>
+          <div className="mt-1 text-sm text-gray-700">
+            Overall {analysis.quality?.overall} / 100
+            {' '}| Completeness {analysis.quality?.completeness}
+            {' '}| Consistency {analysis.quality?.consistency}
+            {' '}| Diversity {analysis.quality?.diversity}
+            {' '}| Balance {analysis.quality?.balance}
+          </div>
+          {Array.isArray(analysis.detectedIssues) && analysis.detectedIssues.length > 0 && (
+            <ul className="mt-2 text-xs text-red-600 list-disc pl-5">
+              {analysis.detectedIssues.slice(0, 4).map((issue: string, idx: number) => (
+                <li key={`${dataset.id}-issue-${idx}`}>{issue}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {strategy && (
+        <div className="mt-3 p-3 border rounded bg-blue-50">
+          <div className="text-xs text-gray-500">策略化构造建议</div>
+          <div className="mt-1 text-sm text-gray-700">
+            推荐版本: <span className="font-medium">{strategy.versionSuggestion}</span>
+            {' '}| split: {JSON.stringify(strategy.splitInfo || {})}
+          </div>
+          {Array.isArray(strategy.rationale) && strategy.rationale.length > 0 && (
+            <ul className="mt-2 text-xs text-gray-700 list-disc pl-5">
+              {strategy.rationale.slice(0, 3).map((item: string, idx: number) => (
+                <li key={`${dataset.id}-rationale-${idx}`}>{item}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {versions.length > 0 && (
         <div className="mt-3">

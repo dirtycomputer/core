@@ -44,6 +44,13 @@ export default function SkillSeekersPage() {
   const [verbose, setVerbose] = useState(false);
   const [lastRun, setLastRun] = useState<SkillSeekersRunResult | null>(null);
   const [actionMessage, setActionMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [customName, setCustomName] = useState('');
+  const [customDescription, setCustomDescription] = useState('');
+  const [customSourceType, setCustomSourceType] = useState<'documentation' | 'github'>('documentation');
+  const [customBaseUrl, setCustomBaseUrl] = useState('');
+  const [customRepo, setCustomRepo] = useState('');
+  const [customConfigPath, setCustomConfigPath] = useState('');
+  const [customMaxPages, setCustomMaxPages] = useState(200);
 
   const statusQuery = useQuery<SkillSeekersStatus>({
     queryKey: ['integrations', 'skill-seekers', 'status'],
@@ -93,6 +100,33 @@ export default function SkillSeekersPage() {
     },
     onError: (error: any) => {
       setActionMessage({ ok: false, text: error?.response?.data?.error || '执行 scrape 失败' });
+    },
+  });
+
+  const createCustomMutation = useMutation({
+    mutationFn: () =>
+      skillSeekersApi.createCustomConfig({
+        name: customName.trim(),
+        description: customDescription.trim() || undefined,
+        sourceType: customSourceType,
+        baseUrl: customSourceType === 'documentation' ? customBaseUrl.trim() : undefined,
+        repo: customSourceType === 'github' ? customRepo.trim() : undefined,
+        maxPages: customSourceType === 'documentation' ? (Number.isFinite(customMaxPages) ? customMaxPages : undefined) : undefined,
+        configPath: customConfigPath.trim() || undefined,
+      }),
+    onSuccess: (data: SkillSeekersConfig) => {
+      queryClient.invalidateQueries({ queryKey: ['integrations', 'skill-seekers', 'configs'] });
+      queryClient.invalidateQueries({ queryKey: ['integrations', 'skill-seekers', 'status'] });
+      setConfigPath(data.configPath);
+      setActionMessage({ ok: true, text: `自定义 Skill 配置已创建: ${data.configPath}` });
+      setCustomName('');
+      setCustomDescription('');
+      setCustomBaseUrl('');
+      setCustomRepo('');
+      setCustomConfigPath('');
+    },
+    onError: (error: any) => {
+      setActionMessage({ ok: false, text: error?.response?.data?.error || '创建自定义 Skill 配置失败' });
     },
   });
 
@@ -274,6 +308,112 @@ export default function SkillSeekersPage() {
         </form>
       </section>
 
+      <section className="bg-white border rounded-lg p-4 space-y-4">
+        <h2 className="text-lg font-semibold text-gray-900">自定义添加 Skill</h2>
+        <p className="text-sm text-gray-500">
+          在本地 `configs/custom/` 下生成一个可直接运行的 Skill Seekers 配置，创建后会自动选中到“执行 Scrape”。
+        </p>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">技能名称</label>
+            <input
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+              placeholder="例如: my-product-docs"
+              className="w-full px-3 py-2 border rounded-md"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">配置文件名（可选）</label>
+            <input
+              value={customConfigPath}
+              onChange={(e) => setCustomConfigPath(e.target.value)}
+              placeholder="custom/my-skill.json 或 my-skill"
+              className="w-full px-3 py-2 border rounded-md"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">描述</label>
+          <textarea
+            value={customDescription}
+            onChange={(e) => setCustomDescription(e.target.value)}
+            rows={2}
+            placeholder="这个 Skill 用于什么任务"
+            className="w-full px-3 py-2 border rounded-md"
+          />
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">来源类型</label>
+            <select
+              value={customSourceType}
+              onChange={(e) => setCustomSourceType(e.target.value as 'documentation' | 'github')}
+              className="w-full px-3 py-2 border rounded-md"
+            >
+              <option value="documentation">documentation</option>
+              <option value="github">github</option>
+            </select>
+          </div>
+
+          {customSourceType === 'documentation' ? (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">文档 URL</label>
+                <input
+                  value={customBaseUrl}
+                  onChange={(e) => setCustomBaseUrl(e.target.value)}
+                  placeholder="https://docs.example.com"
+                  className="w-full px-3 py-2 border rounded-md"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">max-pages</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={2000}
+                  value={customMaxPages}
+                  onChange={(e) => setCustomMaxPages(Number(e.target.value) || 200)}
+                  className="w-full px-3 py-2 border rounded-md"
+                />
+              </div>
+            </>
+          ) : (
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">GitHub 仓库</label>
+              <input
+                value={customRepo}
+                onChange={(e) => setCustomRepo(e.target.value)}
+                placeholder="owner/repo"
+                className="w-full px-3 py-2 border rounded-md"
+              />
+            </div>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            setActionMessage(null);
+            createCustomMutation.mutate();
+          }}
+          disabled={
+            createCustomMutation.isPending
+            || !customName.trim()
+            || (customSourceType === 'documentation' && !customBaseUrl.trim())
+            || (customSourceType === 'github' && !customRepo.trim())
+          }
+          className="inline-flex items-center gap-2 px-4 py-2 border rounded-md text-sm hover:bg-gray-50 disabled:opacity-50"
+        >
+          {createCustomMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wrench className="w-4 h-4" />}
+          创建自定义 Skill 配置
+        </button>
+      </section>
+
       {actionMessage && (
         <div
           className={clsx(
@@ -312,4 +452,3 @@ export default function SkillSeekersPage() {
     </div>
   );
 }
-

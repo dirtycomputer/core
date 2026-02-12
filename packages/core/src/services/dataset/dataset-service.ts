@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { and, desc, eq } from 'drizzle-orm';
 import { createHash } from 'crypto';
-import { mkdir, stat, writeFile } from 'fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { getDatabase } from '../../db/connection';
 import { datasets, datasetVersions } from '../../models/schema';
@@ -9,6 +9,12 @@ import { getConfig } from '../../utils/config';
 import { generateId } from '../../utils/id';
 import { createLogger } from '../../utils/logger';
 import type { DatasetRecord, DatasetStatus, DatasetVersion } from '../../models/types';
+import {
+  analyzeDatasetRows,
+  type DatasetAnalysisResult,
+  recommendDatasetConstructStrategy,
+  type DatasetConstructStrategy,
+} from './dataset-analysis';
 
 const logger = createLogger('service:dataset');
 
@@ -50,6 +56,19 @@ export interface ConstructDatasetInput {
   splitInfo?: Record<string, unknown>;
   buildRecipe?: Record<string, unknown>;
   syntheticRows?: Array<Record<string, unknown>>;
+}
+
+export interface AnalyzeDatasetInput {
+  sampleRows?: Array<Record<string, unknown>>;
+  labelField?: string;
+  maxRows?: number;
+}
+
+export interface RecommendConstructInput {
+  sampleRows?: Array<Record<string, unknown>>;
+  labelField?: string;
+  targetTask?: string;
+  preferredVersion?: string;
 }
 
 export class DatasetService {
@@ -237,6 +256,9 @@ export class DatasetService {
       }
       samplePath = join(basePath, 'synthetic_sample.csv');
       await writeFile(samplePath, csvRows.join('\n'), 'utf-8');
+
+      const jsonPath = join(basePath, 'synthetic_sample.json');
+      await writeFile(jsonPath, JSON.stringify(input.syntheticRows, null, 2), 'utf-8');
     }
 
     const checksum = createHash('sha256')
@@ -268,6 +290,76 @@ export class DatasetService {
     return this.mapDatasetVersion(row);
   }
 
+  async analyze(datasetId: string, input: AnalyzeDatasetInput = {}): Promise<DatasetAnalysisResult> {
+    const dataset = await this.getById(datasetId);
+    if (!dataset) {
+      throw new Error('Dataset not found');
+    }
+
+    let rows = (input.sampleRows || []).filter((row) => row && typeof row === 'object');
+    if (rows.length === 0) {
+      rows = await this.loadSampleRowsFromLatestVersion(datasetId);
+    }
+
+    if (input.maxRows && input.maxRows > 0 && rows.length > input.maxRows) {
+      rows = rows.slice(0, input.maxRows);
+    }
+
+    const analysis = analyzeDatasetRows(rows, { labelField: input.labelField });
+
+    const metadata = (dataset.metadata || {}) as Record<string, unknown>;
+    const prevHistoryRaw = metadata.analysisHistory;
+    const prevHistory = Array.isArray(prevHistoryRaw) ? prevHistoryRaw as unknown[] : [];
+    const nextHistory = [...prevHistory, { at: new Date().toISOString(), analysis }].slice(-10);
+
+    await this.update(datasetId, {
+      metadata: {
+        ...metadata,
+        latestAnalysis: analysis,
+        analysisHistory: nextHistory,
+      },
+    });
+
+    return analysis;
+  }
+
+  async recommendConstruction(datasetId: string, input: RecommendConstructInput = {}): Promise<DatasetConstructStrategy> {
+    const dataset = await this.getById(datasetId);
+    if (!dataset) {
+      throw new Error('Dataset not found');
+    }
+
+    const metadata = (dataset.metadata || {}) as Record<string, unknown>;
+    let analysis: DatasetAnalysisResult | null = null;
+    const latestAnalysis = metadata.latestAnalysis;
+
+    if (latestAnalysis && typeof latestAnalysis === 'object') {
+      analysis = latestAnalysis as DatasetAnalysisResult;
+    } else {
+      analysis = await this.analyze(datasetId, {
+        sampleRows: input.sampleRows,
+        labelField: input.labelField,
+      });
+    }
+
+    const strategy = recommendDatasetConstructStrategy({
+      datasetName: dataset.name,
+      analysis,
+      targetTask: input.targetTask,
+      labelField: input.labelField,
+      preferredVersion: input.preferredVersion,
+    });
+
+    await this.update(datasetId, {
+      metadata: {
+        ...metadata,
+        latestConstructStrategy: strategy,
+      },
+    });
+
+    return strategy;
+  }
+
   async findByName(projectId: string | undefined, name: string): Promise<DatasetRecord | null> {
     const condition = projectId
       ? and(eq(datasets.projectId, projectId), eq(datasets.name, name))
@@ -275,6 +367,101 @@ export class DatasetService {
 
     const [row] = await this.db.select().from(datasets).where(condition).limit(1);
     return row ? this.mapDataset(row) : null;
+  }
+
+  private async loadSampleRowsFromLatestVersion(datasetId: string): Promise<Array<Record<string, unknown>>> {
+    const versions = await this.listVersions(datasetId);
+    if (versions.length === 0) {
+      return [];
+    }
+
+    const latest = versions[0];
+    if (!latest.filePath) {
+      return [];
+    }
+
+    const jsonPath = join(latest.filePath, 'synthetic_sample.json');
+    try {
+      const raw = await readFile(jsonPath, 'utf-8');
+      const rows = JSON.parse(raw);
+      if (Array.isArray(rows)) {
+        return rows.filter((row) => row && typeof row === 'object') as Array<Record<string, unknown>>;
+      }
+    } catch {
+      // ignore and fallback to csv
+    }
+
+    const csvPath = join(latest.filePath, 'synthetic_sample.csv');
+    try {
+      const raw = await readFile(csvPath, 'utf-8');
+      return this.parseCsvRows(raw);
+    } catch {
+      return [];
+    }
+  }
+
+  private parseCsvRows(csvRaw: string): Array<Record<string, unknown>> {
+    const lines = csvRaw.split(/\r?\n/).filter((line) => line.trim() !== '');
+    if (lines.length <= 1) return [];
+
+    const headers = this.parseCsvLine(lines[0]);
+    const rows: Array<Record<string, unknown>> = [];
+    for (const line of lines.slice(1)) {
+      const cells = this.parseCsvLine(line);
+      const row: Record<string, unknown> = {};
+      headers.forEach((header, index) => {
+        const value = cells[index] ?? '';
+        row[header] = this.tryParseScalar(value);
+      });
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  private parseCsvLine(line: string): string[] {
+    const values: string[] = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+
+      if (ch === '"') {
+        const next = line[i + 1];
+        if (inQuotes && next === '"') {
+          current += '"';
+          i += 1;
+          continue;
+        }
+        inQuotes = !inQuotes;
+        continue;
+      }
+
+      if (ch === ',' && !inQuotes) {
+        values.push(current);
+        current = '';
+        continue;
+      }
+
+      current += ch;
+    }
+    values.push(current);
+    return values;
+  }
+
+  private tryParseScalar(value: string): unknown {
+    const normalized = value.trim();
+    if (!normalized) return '';
+    if (normalized === 'null') return null;
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+    const asNumber = Number(normalized);
+    if (Number.isFinite(asNumber)) return asNumber;
+    try {
+      return JSON.parse(normalized);
+    } catch {
+      return normalized;
+    }
   }
 
   private mapDataset(row: typeof datasets.$inferSelect): DatasetRecord {

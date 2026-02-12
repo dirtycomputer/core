@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FileText, Download, Eye, Trash2, ExternalLink } from 'lucide-react';
 import { reportsApi, projectsApi } from '@/api/client';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 
 export default function ReportsPage() {
+  const queryClient = useQueryClient();
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
 
   const { data: projectsData } = useQuery({
@@ -21,6 +22,13 @@ export default function ReportsPage() {
 
   const projects = projectsData?.data || [];
   const reportsList = reports || [];
+
+  const deleteMutation = useMutation({
+    mutationFn: (reportId: string) => reportsApi.delete(reportId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['reports', selectedProjectId] });
+    },
+  });
 
   const typeLabels: Record<string, string> = {
     experiment: '实验报告',
@@ -150,7 +158,7 @@ export default function ReportsPage() {
                       <button
                         className="p-1 text-red-500 hover:text-red-700"
                         title="删除"
-                        onClick={() => reportsApi.delete(report.id)}
+                        onClick={() => deleteMutation.mutate(report.id)}
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>

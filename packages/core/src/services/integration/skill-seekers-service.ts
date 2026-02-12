@@ -1,5 +1,5 @@
 import { existsSync } from 'fs';
-import { mkdir, readdir, readFile } from 'fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'fs/promises';
 import path from 'path';
 import { spawn } from 'child_process';
 import axios from 'axios';
@@ -61,6 +61,16 @@ export interface SkillSeekersRunResult {
   durationMs: number;
   stdoutTail: string;
   stderrTail: string;
+}
+
+export interface CreateCustomSkillConfigInput {
+  name: string;
+  description?: string;
+  sourceType: 'documentation' | 'github';
+  baseUrl?: string;
+  repo?: string;
+  maxPages?: number;
+  configPath?: string;
 }
 
 function normalizePathToUnix(p: string): string {
@@ -241,6 +251,56 @@ export class SkillSeekersService {
     };
   }
 
+  async createCustomConfig(input: CreateCustomSkillConfigInput): Promise<SkillSeekersConfigInfo> {
+    if (!existsSync(path.join(this.repoPath, '.git'))) {
+      throw new Error('Skill Seekers repo is not ready. Please sync repository first.');
+    }
+
+    const name = String(input.name || '').trim();
+    if (!name) {
+      throw new Error('name is required');
+    }
+
+    const sourceType = input.sourceType;
+    if (sourceType !== 'documentation' && sourceType !== 'github') {
+      throw new Error('sourceType must be documentation or github');
+    }
+
+    if (sourceType === 'documentation') {
+      const baseUrl = String(input.baseUrl || '').trim();
+      if (!baseUrl) {
+        throw new Error('baseUrl is required for documentation source');
+      }
+      this.assertHttpUrl(baseUrl, 'baseUrl');
+    }
+
+    if (sourceType === 'github') {
+      const repo = String(input.repo || '').trim();
+      if (!repo) {
+        throw new Error('repo is required for github source');
+      }
+      if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
+        throw new Error('repo must be in owner/repo format');
+      }
+    }
+
+    const relativeConfigPath = this.resolveCustomConfigPath(input.configPath, name);
+    const absoluteConfigPath = path.join(this.repoPath, relativeConfigPath);
+    await mkdir(path.dirname(absoluteConfigPath), { recursive: true });
+
+    const config = this.buildCustomConfig(input, name);
+    await writeFile(absoluteConfigPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+
+    return {
+      configPath: normalizePathToUnix(relativeConfigPath),
+      name,
+      description: String(input.description || ''),
+      category: 'custom',
+      type: sourceType,
+      source: 'local',
+    };
+  }
+
   private async listLocalConfigs(): Promise<SkillSeekersConfigInfo[]> {
     const configsDir = path.join(this.repoPath, 'configs');
     if (!existsSync(configsDir)) {
@@ -308,6 +368,101 @@ export class SkillSeekersService {
       throw new Error('configPath must point to a .json config file');
     }
     return normalized;
+  }
+
+  private resolveCustomConfigPath(configPath: string | undefined, name: string): string {
+    const fallbackFileName = `${this.slugify(name)}.json`;
+    const candidate = (configPath || fallbackFileName).trim();
+    if (!candidate) {
+      throw new Error('configPath is invalid');
+    }
+    if (candidate.includes('..')) {
+      throw new Error('configPath cannot contain ".."');
+    }
+
+    const withExt = candidate.endsWith('.json') ? candidate : `${candidate}.json`;
+    const normalized = normalizePathToUnix(withExt.replace(/^\/+/, ''));
+    const target = normalized.startsWith('configs/')
+      ? normalized
+      : `configs/custom/${normalized}`;
+
+    if (!target.startsWith('configs/custom/')) {
+      throw new Error('custom config must be under configs/custom');
+    }
+    if (!target.endsWith('.json')) {
+      throw new Error('configPath must point to a .json file');
+    }
+    return target;
+  }
+
+  private buildCustomConfig(input: CreateCustomSkillConfigInput, name: string): Record<string, unknown> {
+    if (input.sourceType === 'documentation') {
+      const maxPages = input.maxPages && Number.isFinite(input.maxPages) && input.maxPages > 0
+        ? Math.floor(input.maxPages)
+        : 200;
+      return {
+        name,
+        description: String(input.description || ''),
+        version: '1.0.0',
+        merge_mode: 'rule-based',
+        sources: [
+          {
+            type: 'documentation',
+            base_url: String(input.baseUrl || '').trim(),
+            selectors: {
+              main_content: 'main, article',
+              title: 'h1',
+              code_blocks: 'pre code, pre',
+            },
+            url_patterns: {
+              include: [],
+              exclude: [],
+            },
+            rate_limit: 0.5,
+            max_pages: maxPages,
+          },
+        ],
+      };
+    }
+
+    return {
+      name,
+      description: String(input.description || ''),
+      version: '1.0.0',
+      merge_mode: 'rule-based',
+      sources: [
+        {
+          type: 'github',
+          repo: String(input.repo || '').trim(),
+          enable_codebase_analysis: true,
+          code_analysis_depth: 'deep',
+          fetch_issues: true,
+          max_issues: 50,
+          fetch_changelog: true,
+          fetch_releases: true,
+        },
+      ],
+    };
+  }
+
+  private slugify(value: string): string {
+    const normalized = value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    return normalized || `custom-skill-${Date.now()}`;
+  }
+
+  private assertHttpUrl(value: string, fieldName: string): void {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new Error();
+      }
+    } catch {
+      throw new Error(`${fieldName} must be a valid http/https URL`);
+    }
   }
 
   private async countLocalConfigs(): Promise<number> {
@@ -428,4 +583,3 @@ export class SkillSeekersService {
 }
 
 export const skillSeekersService = new SkillSeekersService();
-

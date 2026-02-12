@@ -8,6 +8,8 @@ export default function LibraryPage() {
   const [selectedProjectId, setSelectedProjectId] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [summaryByPaperId, setSummaryByPaperId] = useState<Record<string, string>>({});
+  const [structuredByPaperId, setStructuredByPaperId] = useState<Record<string, any>>({});
+  const [blogByPaperId, setBlogByPaperId] = useState<Record<string, any>>({});
 
   const { data: projectsData } = useQuery({
     queryKey: ['projects'],
@@ -51,6 +53,22 @@ export default function LibraryPage() {
     mutationFn: (paperId: string) => readingApi.summarize(paperId),
     onSuccess: (data: any, paperId: string) => {
       setSummaryByPaperId((prev) => ({ ...prev, [paperId]: data.summary || '' }));
+    },
+  });
+
+  const extractMutation = useMutation({
+    mutationFn: (paperId: string) => readingApi.extract(paperId, { engine: 'auto', maxPages: 5 }),
+    onSuccess: (data: any, paperId: string) => {
+      setStructuredByPaperId((prev) => ({ ...prev, [paperId]: data }));
+      queryClient.invalidateQueries({ queryKey: ['papers', selectedProjectId] });
+    },
+  });
+
+  const blogMutation = useMutation({
+    mutationFn: (paperId: string) => readingApi.blog(paperId, { style: 'alpharxiv', language: 'zh' }),
+    onSuccess: (data: any, paperId: string) => {
+      setBlogByPaperId((prev) => ({ ...prev, [paperId]: data }));
+      queryClient.invalidateQueries({ queryKey: ['papers', selectedProjectId] });
     },
   });
 
@@ -185,6 +203,18 @@ export default function LibraryPage() {
                     >
                       生成摘要
                     </button>
+                    <button
+                      onClick={() => extractMutation.mutate(paper.id)}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs border rounded hover:bg-gray-50"
+                    >
+                      OCR/LaTeX解析
+                    </button>
+                    <button
+                      onClick={() => blogMutation.mutate(paper.id)}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs border rounded hover:bg-gray-50"
+                    >
+                      一键博客
+                    </button>
                   </div>
                 </div>
 
@@ -195,6 +225,32 @@ export default function LibraryPage() {
                 {summaryByPaperId[paper.id] && (
                   <div className="mt-3 p-3 bg-gray-50 border rounded text-sm text-gray-700 whitespace-pre-wrap">
                     {summaryByPaperId[paper.id]}
+                  </div>
+                )}
+
+                {structuredByPaperId[paper.id] && (
+                  <div className="mt-3 p-3 bg-blue-50 border rounded text-sm text-gray-700">
+                    <div className="font-medium text-gray-900">结构化解析</div>
+                    <div className="text-xs text-gray-600 mt-1">
+                      引擎: {structuredByPaperId[paper.id].engineUsed || '-'}
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">
+                      关键词: {(structuredByPaperId[paper.id].keywords || []).slice(0, 8).join(', ') || '-'}
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">
+                      作者单位: {(structuredByPaperId[paper.id].affiliations || []).slice(0, 3).join(' | ') || '-'}
+                    </div>
+                    {(structuredByPaperId[paper.id].outline || []).length > 0 && (
+                      <div className="mt-2 text-xs text-gray-700">
+                        章节: {(structuredByPaperId[paper.id].outline || []).slice(0, 4).join(' / ')}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {blogByPaperId[paper.id]?.markdown && (
+                  <div className="mt-3 p-3 bg-amber-50 border rounded text-sm text-gray-700 whitespace-pre-wrap">
+                    {blogByPaperId[paper.id].markdown}
                   </div>
                 )}
               </div>
